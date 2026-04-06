@@ -21,7 +21,9 @@ async function main() {
   // Dynamic import for ESM-only MCP SDK
   const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
   const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
-  const { z } = await import('zod');
+  // Use zod/v3 — the MCP SDK's JSON Schema conversion (toJsonSchemaCompat)
+  // fully supports v3 but crashes on v4-full schemas containing z.record().
+  const { z } = await import('zod/v3');
 
   const server = new McpServer({ name: 'microsoft-graph', version: '1.0.0' });
 
@@ -44,8 +46,8 @@ async function main() {
   server.tool(
     'graph_get',
     'Read data from Microsoft Graph API (any GET endpoint)',
-    { readOnlyHint: true, destructiveHint: false },
     { endpoint: z.string().describe('Graph API path, e.g. /me/messages'), params: z.record(z.string()).optional().describe('OData query params (top, filter, select, orderby)') },
+    { readOnlyHint: true, destructiveHint: false },
     async ({ endpoint, params }) => {
       const { GRAPH_TOKEN } = env();
       if (!GRAPH_TOKEN) return text('ERROR: Not authenticated. Run graph_auth first.');
@@ -63,13 +65,13 @@ async function main() {
   server.tool(
     'graph_post',
     'Write data to Microsoft Graph API (POST/PATCH/DELETE)',
-    { readOnlyHint: false },
     {
       method: z.enum(['POST', 'PATCH', 'DELETE']).describe('HTTP method'),
       endpoint: z.string().describe('API path, e.g. /me/events'),
       body: z.record(z.unknown()).optional().describe('JSON request body'),
       useOutlookToken: z.boolean().optional().describe('Use Outlook token + outlook.office.com base URL'),
     },
+    { readOnlyHint: false },
     async ({ method, endpoint, body, useOutlookToken }) => {
       const { GRAPH_TOKEN, OUTLOOK_TOKEN } = env();
       const token = useOutlookToken ? OUTLOOK_TOKEN : GRAPH_TOKEN;
@@ -90,8 +92,8 @@ async function main() {
   server.tool(
     'graph_docs',
     'Get Graph API reference documentation for a topic',
-    { readOnlyHint: true },
     { topic: z.enum(['email', 'calendar', 'teams', 'users', 'patterns']).describe('Documentation topic') },
+    { readOnlyHint: true },
     async ({ topic }) => {
       const file = path.join(REFS, TOPICS[topic]);
       try { return text(fs.readFileSync(file, 'utf8')); } catch { return text(`ERROR: Reference file not found: ${file}`); }
