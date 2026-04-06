@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Auth data (sensitive — never commit)
+.microsoft-graph-skill/
+
+# Eval results (generated per-run)
+evals/results/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+dist/
+*.tgz
