@@ -51,7 +51,7 @@ Before evals, the agent must:
    ```
    node src/cli/mg-get.js "/me?$select=displayName,mail,userPrincipalName"
    ```
-   Set **USER_EMAIL** from the response `mail` or `userPrincipalName` field (whichever is populated).
+   Set **USER_EMAIL** from the response `userPrincipalName` field (NOT `mail` — the `/users/` endpoint requires UPN, and the SMTP address from `mail` returns 404).
 
 3. **Clean up leftover artifacts from previous runs:**
    Search for eval emails:
@@ -102,6 +102,12 @@ These are issues discovered through the skill's design. Following these rules av
 
 8. **JSON body quoting.** When constructing JSON body strings for `mg-post.js`, ensure proper escaping. If running via `execFileSync`, pass the JSON as a raw string argument — no shell escaping needed.
 
+9. **Outlook v2.0 API uses PascalCase.** The CLI auto-routes mail/calendar endpoints to `outlook.office.com/api/v2.0`, which returns **PascalCase** field names (`Id`, `Subject`, `Body`, `From`, `Start`, `End`, `ReceivedDateTime`, `UnreadItemCount`). The Graph API returns camelCase. When reading responses from mail/calendar endpoints, check BOTH casings: `obj.id || obj.Id`, `obj.subject || obj.Subject`, etc.
+
+10. **Outlook v2.0 POST bodies also need PascalCase.** When POSTing to auto-routed mail/calendar endpoints (sendMail, events), use PascalCase property names in the request body: `Message`, `Subject`, `Body`, `ContentType`, `Content`, `ToRecipients`, `EmailAddress`, `Address`, `Start`, `End`, `DateTime`, `TimeZone`, `SaveToSentItems`, `DestinationId`, `Comment`, `SendResponse`. The Graph API accepts camelCase but the Outlook v2.0 API rejects it with HTTP 400.
+
+11. **`/users/` requires UPN, not SMTP.** The `/users/{id-or-upn}` endpoint requires the `userPrincipalName` (e.g., `marcusm@microsoft.com`), NOT the SMTP address from the `mail` field (e.g., `Marcus.Markiewicz@microsoft.com`). Using the SMTP address returns 404. Always use `userPrincipalName` for `USER_EMAIL`.
+
 ## Scoring
 
 For each eval: run the command, check the pass condition.
@@ -124,19 +130,20 @@ There are no skips. Every eval must pass or fail.
 
 ### 02 — List messages
 **Run:** `node src/cli/mg-get.js "/me/messages?$top=3&$select=subject,from,receivedDateTime"`
-**Pass if:** stdout contains `"value"` array with at least 1 message. **Save the first message's `id` as `MSG_ID`.**
+**Pass if:** stdout contains `"value"` array with at least 1 message. **Save the first message's `Id` (PascalCase, Outlook response) as `MSG_ID`.**
 
 ### 03 — Read specific message
 **Depends on:** 02
 **Run:** `node src/cli/mg-get.js "/me/messages/$MSG_ID?$select=subject,body,from,toRecipients"`
-**Pass if:** stdout contains `"subject"` and `"body"`
+**Pass if:** stdout contains `"Subject"` and `"Body"` (PascalCase — Outlook response)
 
 ### 04 — Search messages
 **Run:** `node src/cli/mg-get.js "/me/messages?$search=\"test\"&$top=1&$select=subject"`
 **Pass if:** stdout contains `"value"` array (may be empty — empty array is a PASS; the search executed successfully)
 
 ### 05 — Send email (to self)
-**Run:** `node src/cli/mg-post.js "/me/sendMail" '{"message":{"subject":"MICROSOFT_GRAPH_SKILL_EVAL_Email","body":{"contentType":"Text","content":"Eval test email from Microsoft Graph Skill"},"toRecipients":[{"emailAddress":{"address":"$USER_EMAIL"}}]},"saveToSentItems":true}'`
+**Run:** `node src/cli/mg-post.js "/me/sendMail" '{"Message":{"Subject":"MICROSOFT_GRAPH_SKILL_EVAL_Email","Body":{"ContentType":"Text","Content":"Eval test email from Microsoft Graph Skill"},"ToRecipients":[{"EmailAddress":{"Address":"$USER_EMAIL"}}]},"SaveToSentItems":true}'`
+> ⚠️ PascalCase required — the CLI auto-routes sendMail to Outlook v2.0 which rejects camelCase bodies with HTTP 400.
 **Pass if:** no error (empty stdout is expected — sendMail returns HTTP 202 with no body)
 **Then wait 5 seconds**, then search for the sent message:
 ```
@@ -155,8 +162,8 @@ If no results, retry up to 3 times with 3-second delays. **Save the message `id`
 
 ### 08 — Move message
 **Depends on:** 05 (needs `EVAL_MSG_ID`)
-**Run:** `node src/cli/mg-post.js "/me/messages/$EVAL_MSG_ID/move" '{"destinationId":"drafts"}'`
-**Pass if:** stdout contains `"id"`. **Save the returned `id` as `MOVED_MSG_ID`** (the message gets a new ID after move).
+**Run:** `node src/cli/mg-post.js "/me/messages/$EVAL_MSG_ID/move" '{"DestinationId":"drafts"}'`
+**Pass if:** stdout contains `"Id"` (PascalCase). **Save the returned `Id` as `MOVED_MSG_ID`** (the message gets a new ID after move).
 
 ### 09 — Delete message
 **Depends on:** 08 (needs `MOVED_MSG_ID`)
@@ -173,13 +180,14 @@ If no results, retry up to 3 times with 3-second delays. **Save the message `id`
 **Pass if:** stdout contains `"value"` array
 
 ### 11 — Create event
-**Run:** `node src/cli/mg-post.js "/me/events" '{"subject":"MICROSOFT_GRAPH_SKILL_EVAL_Event","start":{"dateTime":"$FUTURE_START","timeZone":"UTC"},"end":{"dateTime":"$FUTURE_END","timeZone":"UTC"}}'`
+**Run:** `node src/cli/mg-post.js "/me/events" '{"Subject":"MICROSOFT_GRAPH_SKILL_EVAL_Event","Start":{"DateTime":"$FUTURE_START","TimeZone":"UTC"},"End":{"DateTime":"$FUTURE_END","TimeZone":"UTC"}}'`
 Where `$FUTURE_START` is tomorrow at 10:00 UTC (ISO 8601, e.g., `2025-07-18T10:00:00`) and `$FUTURE_END` is tomorrow at 11:00 UTC.
-**Pass if:** stdout contains `"MICROSOFT_GRAPH_SKILL_EVAL_Event"` and `"id"`. **Save the event `id` as `EVENT_ID`.**
+> ⚠️ PascalCase required — the CLI auto-routes /me/events to Outlook v2.0.
+**Pass if:** stdout contains `"MICROSOFT_GRAPH_SKILL_EVAL_Event"` and `"Id"` (PascalCase). **Save the event `Id` as `EVENT_ID`.**
 
 ### 12 — Update event
 **Depends on:** 11
-**Run:** `node src/cli/mg-post.js "/me/events/$EVENT_ID" '{"subject":"MICROSOFT_GRAPH_SKILL_EVAL_Event_Updated"}' PATCH`
+**Run:** `node src/cli/mg-post.js "/me/events/$EVENT_ID" '{"Subject":"MICROSOFT_GRAPH_SKILL_EVAL_Event_Updated"}' PATCH`
 **Pass if:** stdout contains `"MICROSOFT_GRAPH_SKILL_EVAL_Event_Updated"`
 
 ### 13 — Get event
@@ -189,7 +197,7 @@ Where `$FUTURE_START` is tomorrow at 10:00 UTC (ISO 8601, e.g., `2025-07-18T10:0
 
 ### 14 — Accept event
 **Depends on:** 11
-**Run:** `node src/cli/mg-post.js "/me/events/$EVENT_ID/accept" '{"comment":"Eval auto-accept","sendResponse":false}'`
+**Run:** `node src/cli/mg-post.js "/me/events/$EVENT_ID/accept" '{"Comment":"Eval auto-accept","SendResponse":false}'`
 **Pass if:** no error (HTTP 202, empty body) **OR** error message indicates the organizer cannot respond to their own event. Both outcomes score ✅ PASS.
 > ⚠️ You cannot accept an event you organized. If the authenticated user created this event (which they did), the API returns an error. This is expected — score PASS.
 
@@ -274,7 +282,7 @@ node src/cli/mg-get.js "<path-from-nextLink>"
 
 ### 27 — $expand
 **Run:** `node src/cli/mg-get.js "/me/messages?$top=1&$expand=attachments&$select=subject,id"`
-**Pass if:** stdout contains `"value"` array where items include an `"attachments"` property (may be an empty array)
+**Pass if:** stdout contains `"value"` array where items include an `"Attachments"` property (PascalCase — Outlook response; may be an empty array)
 
 ### 28 — Error handling
 **Run:** `node src/cli/mg-get.js "/me/nonexistent"`
@@ -294,20 +302,20 @@ These evals test the critical end-user workflows that the skill must get right. 
 ```
 node src/cli/mg-get.js "/me/mailFolders/Inbox?$select=unreadItemCount,totalItemCount"
 ```
-**Pass if:** stdout contains `"unreadItemCount"` (a number, may be 0).
+**Pass if:** stdout contains `"UnreadItemCount"` (PascalCase — Outlook response; a number, may be 0).
 
 **Step 2 — List unread messages:**
 ```
 node src/cli/mg-get.js "/me/messages?$filter=isRead eq false&$select=subject,from,receivedDateTime,isRead&$top=10&$orderby=receivedDateTime desc"
 ```
-**Pass if:** stdout contains `"value"` array. If array is non-empty, every item must have `"isRead": false`. If array is empty (no unread mail), that's still ✅ PASS.
+**Pass if:** stdout contains `"value"` array. If array is non-empty, every item must have `"IsRead": false` (PascalCase). If array is empty (no unread mail), that's still ✅ PASS.
 
 **Step 3 — Read the first unread message (if any):**
-If Step 2 returned messages, take the first message's `id` and read its body:
+If Step 2 returned messages, take the first message's `Id` (PascalCase) and read its body:
 ```
 node src/cli/mg-get.js "/me/messages/{id}?$select=subject,body,from,toRecipients,receivedDateTime"
 ```
-**Pass if:** stdout contains `"subject"` and `"body"` with `"content"` field. Skip this step if no unread messages.
+**Pass if:** stdout contains `"Subject"` and `"Body"` with `"Content"` field (PascalCase). Skip this step if no unread messages.
 
 **Overall pass:** All executed steps pass.
 
@@ -362,6 +370,53 @@ Where `$NOW_ISO` is the current UTC time in ISO 8601.
 
 ---
 
+## Query Params (3)
+
+These evals specifically test that query parameters are passed as-is (no auto-`$` prefix). The old code added `$` to every param key, breaking non-OData params like `startDateTime` and `endDateTime`.
+
+### 32 — CalendarView with non-OData params
+**Purpose:** CalendarView requires `startDateTime` and `endDateTime` as plain query params (NOT `$startDateTime`). The old auto-`$` prefix caused HTTP 400.
+**Run:** `node src/cli/mg-get.js "/me/calendarView?startDateTime=$TODAY_START&endDateTime=$TODAY_END&$select=subject,start,end&$top=5"`
+Where `$TODAY_START` is today at 00:00:00Z and `$TODAY_END` is today at 23:59:59Z.
+**Pass if:** stdout contains `"value"` array (may be empty). HTTP 400 with "Could not find a property named 'startDateTime'" is a ❌ FAIL — it means the `$` prefix is being added.
+
+### 33 — Mixed OData and non-OData params
+**Purpose:** Tests that `$select` (OData, needs `$`) and `startDateTime` (non-OData, no `$`) can coexist in the same request.
+**Run:** `node src/cli/mg-get.js "/me/calendarView?startDateTime=$TODAY_START&endDateTime=$TODAY_END&$select=subject,start,end,organizer&$orderby=start/dateTime&$top=100"`
+**Pass if:** stdout contains `"value"` array where events (if any) have `"subject"` and `"start"` fields but NOT fields that were excluded by `$select` (e.g., no `"body"` with full content). This confirms both `$select` and `startDateTime` worked correctly.
+
+### 34 — OData $filter with special characters
+**Purpose:** Tests that OData `$filter` values with spaces and quotes are properly URL-encoded when passed as params.
+**Run:** `node src/cli/mg-get.js "/me/messages?$filter=receivedDateTime ge $NINETY_DAYS_AGO&$select=subject,receivedDateTime&$top=3&$orderby=receivedDateTime desc"`
+Where `$NINETY_DAYS_AGO` is 90 days ago in ISO 8601 (e.g., `2026-01-06T00:00:00Z`).
+**Pass if:** stdout contains `"value"` array. All returned messages should have `receivedDateTime` on or after the filter date.
+
+---
+
+## Teams Token Routing (3)
+
+These evals test that Teams endpoints (`/me/chats`, `/teams/`) automatically use `GRAPH_CHAT_TOKEN` when available. The old code always used `GRAPH_TOKEN`, causing HTTP 403 on Teams chat operations.
+
+### 35 — List chats with auto-token routing
+**Purpose:** `/me/chats` requires Chat.Read scope, which is on `GRAPH_CHAT_TOKEN`. The old code used `GRAPH_TOKEN` (which may lack this scope), causing 403.
+**Run:** `node src/cli/mg-get.js "/me/chats?$top=5&$select=id,chatType,topic,lastUpdatedDateTime"`
+**Pass if:** stdout contains `"value"` array with at least 1 chat. HTTP 403 "Insufficient privileges" is a ❌ FAIL — it means the wrong token is being used.
+
+### 36 — Read chat messages with auto-token routing
+**Depends on:** 35 (or 19 if sandbox chat exists)
+**Purpose:** `/me/chats/{id}/messages` requires the chat token. Tests the token routing for sub-paths under `/me/chats`.
+**Run:** `node src/cli/mg-get.js "/me/chats/$CHAT_ID/messages?$top=3"`
+Where `$CHAT_ID` is a chat ID from eval 35 or the sandbox chat from eval 19.
+**Pass if:** stdout contains `"value"` array. HTTP 403 is a ❌ FAIL.
+
+### 37 — Teams channel listing with auto-token routing
+**Depends on:** 17 (needs `TEAM_ID`)
+**Purpose:** `/teams/{id}/channels` requires the chat token. Tests the token routing for the `/teams/` prefix.
+**Run:** `node src/cli/mg-get.js "/teams/$TEAM_ID/channels?$select=displayName,id"`
+**Pass if:** stdout contains `"value"` array with at least 1 channel. HTTP 403 is a ❌ FAIL.
+
+---
+
 ## Final Cleanup
 
 After all evals complete, clean up all MICROSOFT_GRAPH_SKILL_EVAL_ data. Use `$search` instead of `$filter` to also catch auto-reply messages:
@@ -390,7 +445,7 @@ After completing all evals, write `evals/results/report.md`:
 # Eval Report — [date]
 
 **Account:** [user displayName] ([user email])
-**Overall:** [passed]/31 ([percentage]%) — [failed] failed
+**Overall:** [passed]/37 ([percentage]%) — [failed] failed
 
 ## Summary
 
@@ -403,6 +458,8 @@ After completing all evals, write `evals/results/report.md`:
 | Users            |      |      | 3     |
 | Advanced         |      |      | 3     |
 | Core Workflows   |      |      | 3     |
+| Regr: Params     |      |      | 3     |
+| Regr: Tokens     |      |      | 3     |
 
 ## Results
 
@@ -441,6 +498,13 @@ After completing all evals, write `evals/results/report.md`:
 | 29 | Unread emails inbox   |       |       |
 | 30 | Unread Teams messages |       |       |
 | 31 | Calendar for today    |       |       |
+
+| 32 | CalendarView non-OData params |       |       |
+| 33 | Mixed OData and non-OData     |       |       |
+| 34 | OData $filter encoding        |       |       |
+| 35 | List chats auto-token         |       |       |
+| 36 | Read chat messages auto-token |       |       |
+| 37 | Teams channels auto-token     |       |       |
 
 ## Failures
 [Details for any ❌ FAIL]

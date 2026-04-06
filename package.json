@@ -1,6 +1,6 @@
 {
   "name": "microsoft-graph-skill",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI skill for Microsoft Graph API automation — works with Claude Code, GitHub Copilot, Cursor, and other AI agents",
   "bin": {
     "mg-auth": "./src/cli/mg-auth-cli.js",
@@ -9,10 +9,7 @@
     "microsoft-graph-mcp": "./src/mcp/server.js"
   },
   "scripts": {
-    "test": "node --test tests/test-scripts.js",
-    "test:core": "node --test tests/test-core.js",
-    "test:mcp": "node --test tests/test-mcp.js",
-    "test:mcp-tools": "node --test tests/test-mcp-tools.js",
+    "test": "node --test tests/test-scripts.js tests/test-core.js tests/test-mcp.js tests/test-mcp-tools.js tests/test-mcp-handler-logic.js",
     "auth": "node src/cli/mg-auth-cli.js",
     "login": "node src/cli/mg-auth-cli.js --login",
     "logout": "node src/cli/mg-auth-cli.js --logout"

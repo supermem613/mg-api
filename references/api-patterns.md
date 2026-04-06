@@ -8,6 +8,12 @@ Lazy-loaded by the agent for cross-cutting patterns that apply to all Graph APIs
 
 All Graph API endpoints support a standard set of OData query parameters.
 
+> **⚠️ Key Convention: Include the `$` prefix for OData params, omit it for non-OData params.**
+> When using the `graph_get` tool's `params` field, keys are passed as-is to the URL.
+> OData params need `$`: `{"$filter": "...", "$select": "...", "$top": "10"}`.
+> Non-OData params (like `startDateTime`, `endDateTime`) must NOT have `$`.
+> You can also put all params inline in the endpoint: `/me/calendarView?startDateTime=...&$select=...`
+
 ### $select — Choose Fields
 
 Reduces payload size by returning only specified fields.
@@ -140,6 +146,47 @@ GET /me/chats?$expand=members
 ```
 
 Reduces round-trips by embedding related entities inline.
+
+---
+
+## Endpoints with Non-OData Parameters
+
+Some Graph endpoints require parameters that are NOT OData query params. These must NOT have a `$` prefix.
+
+### calendarView — Required Non-OData Params
+
+`/me/calendarView` requires `startDateTime` and `endDateTime` as **non-OData** query params:
+
+```
+# ✅ CORRECT — no $ prefix on startDateTime/endDateTime
+GET /me/calendarView?startDateTime=2024-07-15T00:00:00Z&endDateTime=2024-07-15T23:59:59Z&$select=subject,start,end&$top=50
+
+# ❌ WRONG — $startDateTime causes HTTP 400
+GET /me/calendarView?$startDateTime=2024-07-15T00:00:00Z&$endDateTime=2024-07-15T23:59:59Z
+```
+
+Using the `graph_get` tool's `params` field:
+```json
+{
+  "endpoint": "/me/calendarView",
+  "params": {
+    "startDateTime": "2024-07-15T00:00:00Z",
+    "endDateTime": "2024-07-15T23:59:59Z",
+    "$select": "subject,start,end",
+    "$orderby": "start/dateTime",
+    "$top": "50"
+  }
+}
+```
+
+Or put them inline in the endpoint (often simpler):
+```json
+{
+  "endpoint": "/me/calendarView?startDateTime=2024-07-15T00:00:00Z&endDateTime=2024-07-15T23:59:59Z&$select=subject,start,end&$top=50"
+}
+```
+
+> **Rule of thumb:** If the param appears in the [OData v4 spec](https://docs.oasis-open.org/odata/odata/v4.0/) with a `$` prefix, include `$`. Otherwise (like `startDateTime`, `endDateTime`), don't.
 
 ---
 
@@ -436,9 +483,9 @@ Content-Type: application/json
 
 ---
 
-## The Dual-Token Model
+## The Token Model
 
-The agent uses **two tokens** for different API surfaces:
+The skill uses **three tokens** for different API surfaces. The `graph_get` and `graph_post` tools **auto-select the correct token** based on the endpoint — callers don't need to manage tokens manually.
 
 ### Graph Token
 
@@ -449,23 +496,31 @@ The agent uses **two tokens** for different API surfaces:
 ### Outlook Token
 
 - **Scope:** `https://outlook.office.com/.default`
-- **Used for:** Sending email, chat operations
+- **Used for:** Sending email (`graph_post` with `useOutlookToken: true`)
 - **Endpoints:** `https://outlook.office.com/api/v2.0/...`
 
-### Which Token for Which Operation
+### Graph Chat Token
 
-| Operation | Token | Endpoint Base |
-|-----------|-------|---------------|
-| List/read messages | Graph | `graph.microsoft.com/v1.0` |
-| **Send email** | **Outlook** | `outlook.office.com/api/v2.0` |
-| Calendar operations | Graph | `graph.microsoft.com/v1.0` |
-| User/people operations | Graph | `graph.microsoft.com/v1.0` |
-| Teams channels | Graph | `graph.microsoft.com/v1.0` |
-| **Chat operations** | **Graph Chat** | `graph.microsoft.com/v1.0` |
+- **Scope:** `https://graph.microsoft.com/.default` (with Chat.Read, Chat.ReadWrite)
+- **Used for:** Teams chat operations — `/me/chats`, `/chats/{id}/messages`, `/teams/{id}/channels`
+- **Auto-selected:** `graph_get` and `graph_post` automatically use this token for endpoints matching `/me/chats*` or `/teams/*`
+- **Fallback:** If `GRAPH_CHAT_TOKEN` is not set, falls back to `GRAPH_TOKEN`
 
-> The agent handles token selection automatically based on the operation.
-> This table is for debugging auth failures — if a sendMail gets 401,
-> check that the Outlook token (not Graph token) is being used.
+### Auto-Routing Rules
+
+| Endpoint Pattern | Token Used | Notes |
+|-----------------|-----------|-------|
+| `/me/chats*` | Graph Chat Token | Auto-detected |
+| `/teams/*` | Graph Chat Token | Auto-detected |
+| `/me/messages*` | Graph Token | Standard Graph |
+| `/me/events*`, `/me/calendarView*` | Graph Token | Standard Graph |
+| `/me/joinedTeams*` | Graph Token | NOT `/teams/` — uses standard token |
+| `/users/*`, `/me/people*` | Graph Token | Standard Graph |
+| Any endpoint + `useOutlookToken: true` | Outlook Token | Explicit override |
+
+> **Why separate tokens?** Teams chat permissions (Chat.Read, Chat.ReadWrite) are in a different permission set than mail/calendar. Some organizations grant these separately. The skill authenticates for all three scopes in one flow, but stores them as separate tokens so the correct one is always used.
+
+> **Debugging 403 errors:** If a Teams endpoint returns 403 "Insufficient privileges", the most likely cause is that `GRAPH_CHAT_TOKEN` is missing or expired. Run `graph_auth` to re-authenticate.
 
 ---
 

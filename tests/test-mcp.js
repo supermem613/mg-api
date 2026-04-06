@@ -93,9 +93,9 @@ describe('package.json bin entry', () => {
     assert.match(PKG.bin['microsoft-graph-mcp'], /server\.js$/, 'bin should point to server.js');
   });
 
-  it('has test:mcp script', () => {
-    assert.ok(PKG.scripts['test:mcp'], 'missing test:mcp script');
-    assert.match(PKG.scripts['test:mcp'], /test-mcp/, 'test:mcp should reference test-mcp');
+  it('test script runs all test files', () => {
+    assert.ok(PKG.scripts['test'], 'missing test script');
+    assert.match(PKG.scripts['test'], /test-mcp/, 'test script should include MCP tests');
   });
 });
 

@@ -45,16 +45,24 @@ async function main() {
 
   server.tool(
     'graph_get',
-    'Read data from Microsoft Graph API (any GET endpoint)',
-    { endpoint: z.string().describe('Graph API path, e.g. /me/messages'), params: z.record(z.string()).optional().describe('OData query params (top, filter, select, orderby)') },
+    'Read data from Microsoft Graph API (any GET endpoint). Auto-selects the correct token for Teams chat endpoints (/me/chats, /teams/).',
+    { endpoint: z.string().describe('Graph API path, e.g. /me/messages. Can include query params inline: /me/calendarView?startDateTime=...&endDateTime=...'), params: z.record(z.string()).optional().describe('Query params appended to URL. Keys are passed as-is — include $ for OData params ($filter, $select, $top, $orderby), omit $ for non-OData params (startDateTime, endDateTime).') },
     { readOnlyHint: true, destructiveHint: false },
     async ({ endpoint, params }) => {
-      const { GRAPH_TOKEN } = env();
-      if (!GRAPH_TOKEN) return text('ERROR: Not authenticated. Run graph_auth first.');
+      const { GRAPH_TOKEN, GRAPH_CHAT_TOKEN } = env();
+      // Use chat token for Teams endpoints if available
+      const isTeamsEndpoint = /^\/(me\/chats|teams\/)/.test(endpoint);
+      const token = (isTeamsEndpoint && GRAPH_CHAT_TOKEN) ? GRAPH_CHAT_TOKEN : GRAPH_TOKEN;
+      if (!token) return text('ERROR: Not authenticated. Run graph_auth first.');
       const { graphFetch, parseGraphError, formatHttpError } = require('../core/mg-fetch');
-      const qs = params ? '?' + Object.entries(params).map(([k, v]) => `$${k}=${encodeURIComponent(v)}`).join('&') : '';
-      const url = `https://graph.microsoft.com/v1.0${endpoint}${qs}`;
-      const res = await graphFetch(url, { headers: { Authorization: `Bearer ${GRAPH_TOKEN}`, Accept: 'application/json' } });
+      // Build query string — pass param keys as-is (caller includes $ for OData params)
+      let url = `https://graph.microsoft.com/v1.0${endpoint}`;
+      if (params && Object.keys(params).length > 0) {
+        const qsParts = Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`);
+        const separator = endpoint.includes('?') ? '&' : '?';
+        url += separator + qsParts.join('&');
+      }
+      const res = await graphFetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
       if (!res.ok) { const ge = await parseGraphError(res); return text(formatHttpError(res, ge)); }
       return json(await res.json());
     },
@@ -64,7 +72,7 @@ async function main() {
 
   server.tool(
     'graph_post',
-    'Write data to Microsoft Graph API (POST/PATCH/DELETE)',
+    'Write data to Microsoft Graph API (POST/PATCH/DELETE). Auto-selects the correct token for Teams chat endpoints (/me/chats, /teams/).',
     {
       method: z.enum(['POST', 'PATCH', 'DELETE']).describe('HTTP method'),
       endpoint: z.string().describe('API path, e.g. /me/events'),
@@ -73,8 +81,13 @@ async function main() {
     },
     { readOnlyHint: false },
     async ({ method, endpoint, body, useOutlookToken }) => {
-      const { GRAPH_TOKEN, OUTLOOK_TOKEN } = env();
-      const token = useOutlookToken ? OUTLOOK_TOKEN : GRAPH_TOKEN;
+      const { GRAPH_TOKEN, GRAPH_CHAT_TOKEN, OUTLOOK_TOKEN } = env();
+      // Use chat token for Teams endpoints if available
+      const isTeamsEndpoint = /^\/(me\/chats|teams\/)/.test(endpoint);
+      let token;
+      if (useOutlookToken) token = OUTLOOK_TOKEN;
+      else if (isTeamsEndpoint && GRAPH_CHAT_TOKEN) token = GRAPH_CHAT_TOKEN;
+      else token = GRAPH_TOKEN;
       if (!token) return text(`ERROR: No ${useOutlookToken ? 'Outlook' : 'Graph'} token. Run graph_auth first.`);
       const { graphFetch, parseGraphError, formatHttpError } = require('../core/mg-fetch');
       const base = useOutlookToken ? 'https://outlook.office.com/api/v2.0' : 'https://graph.microsoft.com/v1.0';
