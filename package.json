@@ -1,21 +1,21 @@
 {
-  "name": "microsoft-graph-skill",
-  "version": "1.0.1",
-  "description": "AI skill for Microsoft Graph API automation — works with Claude Code, GitHub Copilot, Cursor, and other AI agents",
+  "name": "mg-api",
+  "version": "1.1.0",
+  "description": "Agentic Microsoft Graph CLI with a bundled thin skill for coding agents",
   "bin": {
-    "mg-auth": "./src/cli/mg-auth-cli.js",
-    "mg-get": "./src/cli/mg-get.js",
-    "mg-post": "./src/cli/mg-post.js",
-    "microsoft-graph-mcp": "./src/mcp/server.js"
+    "mg-api": "bin/mg-api.js"
   },
   "scripts": {
-    "test": "node --test tests/test-scripts.js tests/test-core.js tests/test-mcp.js tests/test-mcp-tools.js tests/test-mcp-handler-logic.js",
-    "auth": "node src/cli/mg-auth-cli.js",
-    "login": "node src/cli/mg-auth-cli.js --login",
-    "logout": "node src/cli/mg-auth-cli.js --logout"
+    "build": "node scripts/build.js",
+    "prepare": "npm run build",
+    "link:local": "npm run build && npm link",
+    "test": "node --test tests/test-scripts.js tests/test-mg-api.js",
+    "test:integration": "node --test tests/test-integration.js",
+    "auth": "mg-api auth status",
+    "login": "mg-api auth login",
+    "logout": "mg-api auth logout"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "playwright": "^1.50.0"
   },
   "keywords": [
@@ -26,14 +26,18 @@
     "email",
     "claude",
     "copilot",
+    "codex",
     "ai",
     "skill",
-    "mcp"
+    "api"
   ],
   "author": "Marcus Markiewicz",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/supermem613/microsoft-graph-skill"
+    "url": "https://github.com/supermem613/mg-api"
+  },
+  "engines": {
+    "node": ">=24.0.0"
   }
 }

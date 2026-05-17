@@ -1,159 +1,133 @@
 # Contributing
 
-Guide for engineers working on the Microsoft Graph Skill.
+Guide for engineers working on the `mg-api` CLI and its bundled skill router.
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/supermem613/microsoft-graph-skill
-cd microsoft-graph-skill
+git clone https://github.com/supermem613/mg-api
+cd mg-api
 npm install
+npm run build
+npm link
+npm test
 ```
 
-**Prerequisites:** Node.js 18+, Microsoft Edge (for Playwright auth).
+**Prerequisites:** Node.js 24+, Microsoft Edge for Playwright auth.
 
 ## Project Structure
 
-```
+```text
+bin/
+  mg-api.js                 # Package bin entrypoint
 src/
-  core/
-    mg-auth.js            # Playwright persistent-context auth (dual-token capture)
-    mg-client.js          # Typed Graph API client (email, calendar, Teams, users)
-    mg-env.js             # Shared auth loader (reads auth.json or env vars)
-    mg-fetch.js           # Shared fetch with retry and diagnostic errors
-  cli/
-    mg-auth-cli.js        # CLI auth entrypoint
-    mg-get.js             # Graph GET request (CLI)
-    mg-post.js            # Graph POST/PATCH/DELETE (CLI)
-  mcp/
-    server.js             # MCP server (4 tools: graph_auth, graph_get, graph_post, graph_docs)
-references/               # Domain-specific API docs (lazy-loaded by agent or MCP graph_docs)
-  email.md                # Messages, send, reply, attachments, folders
-  calendar.md             # Events, calendar views, scheduling, reminders
-  teams.md                # Teams, channels, messages, chats, members
-  users.md                # User profiles, people search, org hierarchy
-  api-patterns.md         # Pagination, $select/$filter/$orderby, batching, error handling
-.github/skills/microsoft-graph/
-  SKILL.md                # GitHub Copilot skill definition
-.claude/skills/microsoft-graph/
-  SKILL.md                # Claude Code skill definition
-docs/                     # Human-facing documentation
-evals/
-  results/                # Eval output
+  registry.js               # Single source of truth for capabilities, schema, help
+  renderers.js              # Generated help, schema, and SKILL router renderers
+  mg-api-core.js            # Agentic CLI dispatcher and JSON envelopes
+  graph-auth.js             # Playwright persistent-context auth
+  graph-fetch.js            # Shared fetch with retry and diagnostics
+  graph-rest.js             # Graph and Outlook REST execution with token routing
+.claude/skills/mg-api/
+  SKILL.md                  # Lean agent router generated from registry
+  references/               # Lazy-loaded REST background references
+docs/
+  AGENTIC_CONTRACT.md       # mg-api command and output contract
+  architecture.md
+  setup-guide.md
+  api-coverage.md
+  auth-deep-dive.md
 tests/
-  test-scripts.js         # Static validation (no network)
-  test-core.js            # Unit tests for core modules
+  test-scripts.js           # Built-in auth, REST, and fetch module tests
+  test-mg-api.js            # mg-api registry/schema/help/envelope tests
+  test-integration.js       # Live Microsoft Graph tests
 ```
 
 ## Architecture
 
-This project is a **Skill + Lean MCP** — one domain core, two delivery surfaces:
+This is a **CLI with a bundled skill**. The `mg-api` CLI is the product surface and owns all Microsoft Graph behavior. The bundled `SKILL.md` is a thin router that tells agents to call semantic `mg-api` commands instead of composing raw HTTP.
 
-1. **Skill** — the agent reads `SKILL.md`, learns the API patterns, and calls `mg-get.js`/`mg-post.js` directly. No runtime server needed.
-2. **MCP server** — 4 tools (`graph_auth`, `graph_get`, `graph_post`, `graph_docs`) for clients that prefer tool-based interaction (VS Code, Cursor, Claude Desktop).
+The registry in `src/registry.js` is the source of truth for:
 
-Both surfaces share the same core modules (`mg-auth.js`, `mg-client.js`, `mg-fetch.js`, `mg-env.js`).
+- command groups and verbs
+- parameters and examples
+- endpoint/method/base/token metadata
+- `mg-api schema`
+- generated `--help`
+- generated `SKILL.md` router
+- test expectations
 
-**Auth flow:** Playwright launches Edge with a persistent browser profile (`~/.microsoft-graph-skill/browser-profile/`). It navigates to Outlook and Teams, intercepting network requests to capture Graph and Outlook bearer tokens. On first run, the user logs in visually. After that, auth is headless and instant. No app registration, no client IDs, no secrets.
+Implementation logic belongs under `src/`. The skill directory should stay a lean router plus references.
 
-**Token budget:** `SKILL.md` is kept small (~2K tokens). The 5 reference files in `references/` are loaded on demand by the agent only when needed, keeping the base cost low.
+## Token Routing
 
-See [`docs/architecture.md`](docs/architecture.md) for diagrams and design decisions.
+Each verb declares `token` (`graph`, `outlook`, or `chat`) and `base` (`graph` or `outlook`). `src/graph-rest.js` picks the matching cached token from `~/.mg-api/auth.json` and builds the request against the right base URL. Do not implement path-based auto-detection. Add new audiences only by extending the registry and the auth capture flow.
 
 ## Development Workflow
 
 ### Running Tests
 
 ```bash
-npm test                    # Static validation — no network, no auth
-npm run test:core           # Unit tests for core modules
-npm run test:mcp            # MCP server tests
+npm run build
+npm test
+npm run test:integration
 ```
 
-Static tests (`test-scripts.js`) validate file existence, shebangs, error messages, module structure, and that CLI scripts only require local modules (no npm deps in mg-get/mg-post).
+`npm run build` validates that generated artifacts match the registry and that the `mg-api` bin is wired correctly. `npm run link:local` runs the build and then `npm link` for local CLI development.
 
-### Running Evals
+Use `mg-api update` from linked or git-clone installs to self-update. It runs `git pull --ff-only`, skips install and build when already current, and otherwise runs `npm install --no-audit --no-fund` plus `npm run build`.
 
-Evals test Graph API operations against your live Microsoft 365 account. They are defined in `evals/` as agent-executable specs — tell your AI agent:
+`npm test` must stay fast and offline. It validates the `mg-api` CLI contract and its built-in auth/REST modules.
 
+### Linting the Skill
+
+Run `lint-skill` after changing `SKILL.md` or reference files:
+
+```bash
+node C:\Users\marcusm\.copilot\skills\lint-skill\scripts\lint-skill.mjs --findings-only .claude\skills\mg-api
 ```
-Run evals/run-evals.md
-```
 
-Results are written to `evals/results/`.
-
-> **Safe for your real account.** Evals are non-destructive — test emails go to yourself (auto-deleted), calendar events are auto-deleted, and Teams messages go to a private sandbox chat (only you). All test data is prefixed with `MICROSOFT_GRAPH_SKILL_EVAL_`.
+The linter should be clean before delivery. New errors or warnings must be fixed before shipping.
 
 ### Authenticating for Development
 
 ```bash
-npm run auth               # Standard auth (headless if profile exists)
-npm run login              # Force visible browser for re-login
-npm run logout             # Clear saved profile + tokens
+mg-api auth login
+mg-api auth status
 ```
 
-First run opens Edge for login. After that, re-running the command captures fresh tokens headlessly. Tokens last ~1 hour. Use `--login` to force interactive login, `--logout` to clear the profile.
+Use `--force` for interactive re-login and `mg-api auth logout` to clear the saved profile.
 
-## Modifying Scripts
+## Modifying Capabilities
 
-### CLI Scripts (`src/cli/`)
+Add or change commands in `src/registry.js` first. The registry change should drive schema, help, docs, and tests.
 
-1. **No npm dependencies** in mg-get, mg-post. Only local `../core/` requires and Node built-ins. The test suite enforces this.
-2. **mg-fetch.js** is the shared fetch layer. All HTTP calls go through `graphFetch()`, which handles retry on transient errors (ETIMEDOUT, ECONNRESET, 429) and produces diagnostic error messages. Don't bypass it.
-3. **mg-env.js** is the auth resolver. It checks env vars first (`GRAPH_TOKEN`, `OUTLOOK_TOKEN`), then falls back to `~/.microsoft-graph-skill/auth.json`. Don't duplicate this logic.
-4. **Cross-platform.** No shell dependencies, no OS-specific paths in scripts. Node.js only.
+Rules:
 
-### Core Modules (`src/core/`)
-
-- **mg-auth.js** — Playwright auth flow. Captures Graph + Outlook tokens by intercepting network requests from Outlook and Teams.
-- **mg-client.js** — Typed API client with named functions for every operation. The MCP server and tests use this; CLI scripts use mg-get/mg-post.
-- **mg-fetch.js** — Shared fetch with retry and enriched error diagnostics.
-- **mg-env.js** — Auth resolver. Env vars override file-based auth.
-
-### MCP Server (`src/mcp/`)
-
-The MCP server exposes 4 tools and 5 resources. It lazy-loads core modules so auth is read fresh each call. When adding new Graph API operations, add them to `mg-client.js` — the MCP server's `graph_get`/`graph_post` tools are generic and don't need changes for new endpoints.
-
-## Modifying SKILL.md
-
-`SKILL.md` is what the agent reads. It's the most sensitive file in the repo — small changes affect every agent interaction.
-
-- Keep it under ~2K tokens. Move detailed API docs to `references/`.
-- Use `$SD` (not `$SKILL_DIR`) in all command examples. The agent sets `SD` once per session pointing to the scripts directory.
-- Test changes by invoking the skill from Claude Code or Copilot CLI and observing agent behavior.
-- The `.github/skills/` and `.claude/skills/` copies must stay in sync.
+1. **No raw passthrough.** Add semantic capability verbs instead of exposing arbitrary HTTP.
+2. **Generated help.** Do not hand-write command help separate from the registry.
+3. **Generated skill router.** `SKILL.md` must match `renderSkillRouter()`.
+4. **Auth isolation.** Only `auth` may load Playwright. REST capability commands must not import Playwright directly or transitively.
+5. **No environment variables.** Configuration lives in the registry and `~/.mg-api/auth.json`. Do not read `process.env`.
+6. **Agentic envelopes.** Non-help commands write one JSON object to stdout. Remediation goes to stderr.
+7. **Declare token + base.** Every REST verb must specify the audience and base so the router can pick the right token.
 
 ## Modifying Reference Files
 
-The 5 files in `references/` are loaded on demand when the agent needs domain-specific knowledge (via skill reference loading or the MCP `graph_docs` tool).
+References provide Microsoft Graph REST background for agents after they have selected a semantic `mg-api` capability. Prefer examples that start with `mg-api schema <capability> <verb>` or a semantic `mg-api` command.
 
-| File | Covers |
-|------|--------|
-| `email.md` | Messages, send, reply, attachments, folders |
-| `calendar.md` | Events, calendar views, scheduling, reminders |
-| `teams.md` | Teams, channels, messages, chats, members |
-| `users.md` | User profiles, people search, org hierarchy |
-| `api-patterns.md` | Pagination, $select/$filter/$orderby, batching, error handling |
+When adding a new operation:
 
-When adding a new operation: add it to the appropriate reference file, add a row to `docs/api-coverage.md`, and if it's common enough, add it to the quick reference in `SKILL.md`.
-
-## Adding Evals
-
-Evals live in `evals/`. Each eval has:
-
-- A number and name
-- The exact command or operation to run
-- A pass condition
-- Cleanup instructions (if the eval creates data)
-
-All test data must be prefixed with `GRAPH_SKILL_EVAL_` so it's identifiable and cleanable.
+1. Add a semantic verb to `src/registry.js`.
+2. Add or update tests in `tests/test-mg-api.js`.
+3. Update `docs/api-coverage.md`.
+4. Update references only for background details the schema cannot express.
 
 ## Code Style
 
-- `'use strict'` at the top of every script
-- Shebang line (`#!/usr/bin/env node`) on every script
-- Errors go to stderr, data goes to stdout
-- Silence means success — no verbose output by default
-- No comments explaining obvious code. Comment intent, not mechanics.
+- `'use strict'` at the top of CommonJS scripts
+- Shebang line on executable bins
+- JSON stdout for non-help commands
+- stderr for progress and remediation
+- Comments explain why, not mechanics

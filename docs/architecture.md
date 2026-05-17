@@ -1,137 +1,109 @@
-# Architecture & Design Decisions
+## Architecture & Design Decisions
 
-## What This Is
+### What This Is
 
-A skill that teaches AI agents (Claude Code, GitHub Copilot, Codex, Cursor) to interact with Microsoft 365 via the Graph API. The project delivers two surfaces from one domain core: a skill (agent reads SKILL.md and calls CLI scripts) and a lean MCP server (4 tools for tool-based clients).
+This is a Microsoft Graph CLI with a bundled skill router. The `mg-api` CLI is the product surface: it maps capability verbs to Microsoft Graph and Outlook REST implementation details and returns stable JSON envelopes. Agents may load the bundled `SKILL.md`, but that skill only routes them to the CLI.
 
-## Why Skill + MCP (Not One or the Other)
+### Why a CLI with a Bundled Skill Instead of an MCP Server
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| Skill only | Zero runtime deps, agent flexibility, cross-platform | Requires shell access, no structured tool schema |
-| MCP only | Structured tools, discoverable via MCP protocol | Requires running server, fixed tool signatures |
-| **Skill + Lean MCP** | **Best of both: flexible agents use the skill, tool-based clients use MCP** | **Two delivery surfaces to maintain** |
+- **Agentic command surface** — agents call `mg-api email list`, `mg-api calendar create`, and `mg-api schema`, not raw HTTP helpers.
+- **No long-running server** — commands are short-lived and work in normal shells.
+- **Cross-platform** — Node.js and Playwright work on Windows, macOS, and Linux.
+- **Generated contract** — schema, help, and the skill router come from one registry.
+- **Auth isolation** — Playwright is limited to `mg-api auth`; REST commands stay on the lightweight hot path.
 
-The lean MCP approach keeps the MCP server thin — 4 generic tools (`graph_auth`, `graph_get`, `graph_post`, `graph_docs`) that delegate to the same core modules. No operation-specific tools, no schema duplication.
+### Command Architecture
 
-## Auth Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                     Auth Layer                            │
-│                                                           │
-│  ┌──────────┐  Playwright Persistent  ┌──────────┐       │
-│  │ mg-auth  │  Context (msedge)      │ Edge      │       │
-│  │ .js      │───────────────────────▶│ Browser   │       │
-│  │          │                        │ Profile   │       │
-│  └──────────┘                        └──────────┘       │
-│       │                                                   │
-│       │  1. Navigate to Outlook → intercept Graph token   │
-│       │  2. Navigate to Teams  → intercept Graph token    │
-│       │  3. Capture best token per audience (most scopes) │
-│       │                                                   │
-│       │  Profile: ~/.microsoft-graph-skill/               │
-│       │           browser-profile/                        │
-└──────────────────────────────────────────────────────────┘
-              │
-              ▼ GRAPH_TOKEN + OUTLOOK_TOKEN
-┌──────────────────────────────────────────────────────────┐
-│                   Delivery Surfaces                       │
-│                                                           │
-│  ┌─────────────────┐       ┌──────────────────┐         │
-│  │   Skill (CLI)   │       │   MCP Server     │         │
-│  │ mg-get, mg-post │       │ 4 tools, stdio   │         │
-│  └────────┬────────┘       └────────┬─────────┘         │
-│           │                         │                     │
-│           └────────┬────────────────┘                     │
-│                    ▼                                      │
-│         ┌──────────────────┐                              │
-│         │   Core Modules   │                              │
-│         │ mg-client.js     │                              │
-│         │ mg-fetch.js      │                              │
-│         │ mg-env.js        │                              │
-│         └──────────────────┘                              │
-└──────────────────────────────────────────────────────────┘
-              │
-    ┌─────────┼──────────┐
-    ▼                    ▼
-┌──────────┐     ┌─────────────┐
-│ Graph    │     │ Outlook     │
-│ v1.0 API │     │ v2.0 API    │
-│ graph.   │     │ outlook.    │
-│ microsoft│     │ office.com  │
-│ .com     │     │             │
-└──────────┘     └─────────────┘
+```text
+Agent loads SKILL.md
+    |
+    v
+mg-api <capability> <verb>
+    |
+    +-- src/registry.js     capability specs, params, examples, endpoints, token+base per verb
+    +-- src/renderers.js    generated help, schema, SKILL router
+    +-- src/mg-api-core.js  dispatcher, JSON envelopes, doctor, self-update
+    +-- src/graph-auth.js   Playwright auth and cached tokens
+    +-- src/graph-rest.js   Graph and Outlook REST execution with token routing
+    +-- src/graph-fetch.js  retry and diagnostics
+    |
+    v
+graph.microsoft.com / outlook.office.com
 ```
 
-## Skill Loading Architecture
+The CLI owns the implementation. The skill directory contains only the router and lazy-loaded references.
 
+### Auth Architecture
+
+```text
+mg-api auth login
+    |
+    v
+src/graph-auth.js
+    |
+    v
+Playwright persistent Edge context
+    |
+    +-- profile: ~/.mg-api/browser-profile/
+    +-- auth:    ~/.mg-api/auth.json
 ```
-Agent loads SKILL.md (~2K tokens)
-    │
-    ├─ Auth setup (one-time)
-    ├─ Quick reference (10 common ops)
-    ├─ Script usage patterns ($SD convention)
-    └─ Reference file index
-         │
-         └─ On demand: agent loads specific reference file
-            ├─ email.md (messages, send, reply, attachments)
-            ├─ calendar.md (events, scheduling, RSVP)
-            ├─ teams.md (teams, channels, messages, chats)
-            ├─ users.md (profiles, people search)
-            └─ api-patterns.md (pagination, $filter, batching)
+
+A single login flow captures up to three tokens (Graph, Outlook, Chat) from Authorization headers on Outlook Web, Teams, and Office page loads. Only the auth path loads Playwright. Tests assert that REST capability files do not import Playwright.
+
+### Token Routing
+
+Each verb declares `token` (`graph`, `outlook`, `chat`) and `base` (`graph`, `outlook`) in the registry. `src/graph-rest.js` looks up the cached token for that audience and builds the request against the correct base URL. There is no per-request auto-detection — the registry is the source of truth.
+
+| Verb group | Token | Base |
+|------------|-------|------|
+| `email list|get|search|move|delete|attachments` | graph | graph |
+| `email send|reply` | outlook | outlook |
+| `calendar *` | graph | graph |
+| `users me|search|get` | graph | graph |
+| `teams list-joined` | graph | graph |
+| `teams list-channels|send-channel-message` | chat | graph |
+| `chats list|messages` | outlook | outlook |
+| `chats send` | chat | graph |
+
+### Bundled Skill Architecture
+
+```text
+Agent loads SKILL.md
+    |
+    +-- command model
+    +-- schema/help routing
+    +-- reference file index
+    |
+    v
+Agent calls mg-api schema <capability> <verb>
+    |
+    v
+Agent calls semantic command
 ```
 
-## MCP Server Architecture
+Reference files provide background REST details only after a capability has been selected. They should not route agents around `mg-api`.
 
-The MCP server (`src/mcp/server.js`) exposes 4 tools and 5 resources via stdio transport. Total tool description overhead: ~500 tokens.
-
-| Tool | Purpose | Read-only |
-|------|---------|-----------|
-| `graph_auth` | Authenticate via browser sign-in | No |
-| `graph_get` | Read data from any Graph GET endpoint | Yes |
-| `graph_post` | Write data via POST/PATCH/DELETE | No |
-| `graph_docs` | Load reference documentation by topic | Yes |
-
-Resources mirror the reference files (`graph://docs/email`, `graph://docs/calendar`, etc.) for MCP clients that support resource access.
-
-## Context Window Impact
-
-| Component | Tokens | When Loaded |
-|-----------|--------|-------------|
-| SKILL.md | ~2,000 | Always (session start) |
-| email.md | ~1,500 | On demand |
-| calendar.md | ~1,500 | On demand |
-| teams.md | ~1,200 | On demand |
-| users.md | ~800 | On demand |
-| api-patterns.md | ~1,500 | On demand |
-| **Total (all loaded)** | **~8,500** | Rare |
-| **Typical session** | **~3,500–5,000** | SKILL.md + 1–2 references |
-
-## Scripts
-
-| Script | Location | Purpose |
-|--------|----------|---------|
-| `mg-auth-cli.js` | `src/cli/` | CLI auth entrypoint — wraps mg-auth.js for shell use |
-| `mg-get.js` | `src/cli/` | Graph GET request from command line |
-| `mg-post.js` | `src/cli/` | Graph POST/PATCH/DELETE from command line |
-| `mg-auth.js` | `src/core/` | Playwright auth — captures dual tokens from Outlook + Teams |
-| `mg-client.js` | `src/core/` | Typed API client — 25+ named functions for Graph operations |
-| `mg-env.js` | `src/core/` | Auth resolver — env vars > auth.json |
-| `mg-fetch.js` | `src/core/` | Fetch with retry (transient errors + 429) and diagnostics |
-| `server.js` | `src/mcp/` | MCP server — 4 tools, 5 resources, stdio transport |
-
-## Design Decisions Log
+### Design Decisions Log
 
 | Decision | Chosen | Why |
 |----------|--------|-----|
-| Skill vs MCP | Both (Skill + Lean MCP) | Flexible agents use skill directly, tool-based clients use MCP |
-| Auth method | Playwright persistent context | No app registration, no IT approval, captures real user tokens |
-| Dual tokens | Graph + Outlook tokens | Some operations (send email, reply) require Outlook-audience tokens |
-| Token capture | Network request interception | Intercept `Authorization: Bearer` headers from Outlook/Teams page loads |
-| Script language | Node.js only | Cross-platform, no shell dependencies |
-| API surface | Graph v1.0 + Outlook v2.0 | v1.0 for most ops; Outlook REST for send/reply/chats (token audience) |
-| MCP tools | 4 generic tools | `graph_get`/`graph_post` handle any endpoint — no per-operation tools |
-| Reference files | Lazy-loaded | Token efficiency (~2K base vs ~8.5K all) |
-| Core vs CLI split | Separate directories | Core is testable + reusable by MCP; CLI is thin wrappers for shell |
-| Error handling | Enriched diagnostics | `mg-fetch.js` adds hints (401 → re-auth, 429 → throttle, etc.) |
+| Product form | CLI with bundled skill | Tested CLI owns behavior. Skill is a thin router |
+| Primary surface | `mg-api` semantic commands | Capability-oriented and agentic |
+| Source of truth | `src/registry.js` | Schema/help/SKILL/tests cannot drift |
+| Auth method | Playwright persistent context | No app registration, browser-equivalent access |
+| Auth boundary | `mg-api auth` only | Prevents Playwright from entering REST hot path |
+| Token routing | Declared per verb in registry | No fragile path-based auto-detection |
+| Raw HTTP fallback | Not supported | Missing coverage should become a semantic verb |
+| Output | JSON envelope | Stable machine-readable agent contract |
+| Self-update | `mg-api update` | Git-clone installs can pull, install, and rebuild in one command |
+| MCP server | Removed | The CLI is the single product surface |
+
+### What This CLI Cannot Do
+
+| Capability | Why | Workaround |
+|-----------|-----|-----------|
+| Raw arbitrary HTTP passthrough | Deliberately excluded to keep the CLI semantic | Add a capability verb |
+| OneDrive files | Not yet covered | Add a `files` capability when needed |
+| SharePoint REST | Different product surface | Use `sp-api` (sibling project) |
+| Bulk batch requests | Not exposed yet | Loop semantic verbs or add a `batch` capability |
+| Application-only Graph access | Persistent-context auth is browser-equivalent | Use an app registration + MSAL flow if you need daemon access |

@@ -2,10 +2,7 @@
 node_modules/
 
 # Auth data (sensitive — never commit)
-.microsoft-graph-skill/
-
-# Eval results (generated per-run)
-evals/results/
+.mg-api/
 
 # Logs
 *.log

@@ -1,6 +1,6 @@
-# Microsoft Graph Skill
+# mg-api
 
-**AI-powered Microsoft Graph for Claude Code, GitHub Copilot CLI, and other AI coding agents**
+**An agentic Microsoft Graph CLI with a bundled thin skill for Claude Code, GitHub Copilot CLI, and other coding agents.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -8,154 +8,160 @@
 
 ## What It Does
 
-This skill teaches AI coding agents to interact with Microsoft 365 through the Graph API: email, calendar, Teams, users — 25+ operations, zero app registration, cross-platform. Works as both a skill (agent reads SKILL.md and calls scripts) and an MCP server (4 tools, ~500 tokens).
+This repo is first and foremost the `mg-api` CLI. It includes a bundled skill only as a thin router so agents know when and how to call the CLI. Agents use semantic Microsoft Graph capability commands instead of raw HTTP verbs. The CLI owns auth, command routing, generated help, generated schema, JSON envelopes, and the current email/calendar/teams/chats/users implementation.
 
-## Capabilities
+`mg-api` is agentic by default:
+
+- JSON stdout for non-help commands
+- Progress and remediation on stderr
+- `mg-api schema` as the machine-readable source of truth
+- Help generated from the same capability registry as schema
+- No raw HTTP passthrough
+- Per-verb token routing (Graph, Outlook REST, Graph chat token) — callers never set headers
+
+## Questions and Tasks It Can Handle
+
+### Auth and Setup
+
+- *"Log in to Microsoft 365 so future commands can use it"*
+- *"Am I authenticated, and which tokens were captured?"*
+- *"Clear the saved browser profile and auth state"*
+- *"Check whether my local `mg-api` install is healthy"*
+- *"Update this git-clone install of `mg-api`"*
 
 ### Email
-- *"Show me my 10 most recent emails"*
-- *"Read the full body of that email from Sarah"*
-- *"Send an email to the team about the outage"*
-- *"Reply to John's message with 'Thanks, approved'"*
-- *"Search my inbox for emails about quarterly review"*
-- *"Move that email to the Archive folder"*
-- *"Delete the spam message"*
-- *"List attachments on that email"*
+
+- *"List my 10 most recent unread messages with subject, from, and received time"*
+- *"Get message AAMkAGI... with the full body and sender"*
+- *"Send an email to alice@example.com with subject Hello and body Hi there"*
+- *"Reply to message AAMkAGI... with the comment Thanks, approved"*
+- *"Search my mailbox for quarterly review"*
+- *"Move message AAMkAGI... to the Archive folder"*
+- *"Delete message AAMkAGI..."*
+- *"List attachments on message AAMkAGI..."*
 
 ### Calendar
-- *"What meetings do I have today?"*
-- *"Get the details for my 2pm meeting"*
-- *"Create a meeting with Alice and Bob next Tuesday at 3pm"*
-- *"Update the project sync — move it to 4pm"*
-- *"Cancel Friday's standup"*
-- *"Accept the team lunch invitation"*
-- *"Decline the 9am meeting with a note"*
-- *"Find a free 30-minute slot with Sarah this week"*
 
-### Teams
-- *"List all my Teams"*
-- *"Show the channels in the Engineering team"*
-- *"Post 'Build passed ✅' to the #releases channel"*
-- *"List my recent chats"*
-- *"Show messages in my chat with Alice"*
-- *"Send a chat message to Bob"*
+- *"List my next 20 events ordered by start time"*
+- *"Show events on 2026-01-15 in calendar view"*
+- *"Get event AAMkAGI... with subject, start, end, attendees"*
+- *"Create a 30-minute standup for tomorrow at 09:00 with alice@example.com and bob@example.com"*
+- *"Update event AAMkAGI... to change its subject"*
+- *"Delete event AAMkAGI..."*
+- *"Accept event AAMkAGI... with the comment See you there"*
+- *"Find meeting times for alice@example.com and bob@example.com on Wednesday, 30 minutes"*
 
-### Users
-- *"What's my profile info?"*
-- *"Search for people named 'Martinez' in my org"*
-- *"Look up user john@contoso.com"*
+### Teams and Chats
 
-## Test Drive
+- *"List the Teams I have joined"*
+- *"List channels for team {team-id}"*
+- *"Post a message to channel {channel-id} in team {team-id}"*
+- *"List my Teams chats"*
+- *"Read the last 50 messages in chat {chat-id}"*
+- *"Send a message to chat {chat-id}"*
 
-Clone the repo and take it for a spin:
+### Users and People
 
-```bash
-git clone https://github.com/supermem613/microsoft-graph-skill
-cd microsoft-graph-skill && npm install
-copilot   # or: claude
+- *"Who am I — show display name, mail, job title, department"*
+- *"Search for Martinez in the org directory"*
+- *"Get user alice@example.com with display name and job title"*
+
+### Schema, Help, and Agent Routing
+
+- *"What Microsoft Graph capabilities does `mg-api` expose right now?"*
+- *"Show the machine-readable schema for `email send`"*
+- *"Show generated help for `calendar find-times`"*
+- *"Tell me whether a capability is implemented or still planned without falling back to raw HTTP"*
+
+## Current Command Surface
+
+```text
+mg-api auth     login | logout | status
+mg-api email    list | get | send | reply | search | move | delete | attachments
+mg-api calendar list | view | get | create | update | delete | accept | decline | find-times
+mg-api teams    list-joined | list-channels | send-channel-message
+mg-api chats    list | messages | send
+mg-api users    me | search | get
+mg-api schema   [capability] [verb]
+mg-api doctor
+mg-api update
 ```
 
-Try: *"Show me my 5 most recent emails"*
+Planned capability groups (email folders, calendar instances/occurrences, teams members, chats members, users list/photo, OneDrive files) are exposed in `mg-api schema` so agents can see what is not implemented yet without falling back to raw HTTP.
 
-## Install
+## Quick Start
+
+```bash
+git clone https://github.com/supermem613/mg-api
+cd mg-api
+npm install
+npm run build
+npm link
+mg-api doctor
+```
+
+Authenticate once:
+
+```bash
+mg-api auth login
+```
+
+Then use semantic commands:
+
+```bash
+mg-api users me --select displayName,mail,jobTitle
+mg-api email list --top 10 --select subject,from,receivedDateTime --orderby "receivedDateTime desc"
+mg-api calendar view --start 2026-01-15T00:00:00Z --end 2026-01-16T00:00:00Z
+mg-api schema email send
+```
+
+## Bundled Skill
+
+The skill under `.claude/skills/mg-api` is not the product surface. It is a generated router plus lazy-loaded references. Install the CLI first, then install or copy the skill so agents route Microsoft Graph tasks to `mg-api`.
 
 ### Claude Code
 
 ```claude
-/install supermem613/microsoft-graph-skill
+/install supermem613/mg-api
 ```
 
-### Copilot CLI / Other AI Coding Agents
+### Copilot CLI / Other Agents
 
-Copy the skill directory into your project and install dependencies:
-
-**macOS / Linux:**
-
-```bash
-git clone https://github.com/supermem613/microsoft-graph-skill /tmp/microsoft-graph-skill
-cp -r /tmp/microsoft-graph-skill/.claude/skills/microsoft-graph .claude/skills/
-npm install playwright
-```
-
-**Windows (PowerShell):**
-
-```powershell
-git clone https://github.com/supermem613/microsoft-graph-skill $env:TEMP\microsoft-graph-skill
-Copy-Item -Recurse $env:TEMP\microsoft-graph-skill\.claude\skills\microsoft-graph .claude\skills\
-npm install playwright
-```
-
-The skill is auto-discovered from `.claude/skills/`. Run `/skills list` in Copilot CLI to verify.
-
-### MCP Server
-
-The skill also ships as an MCP server with 4 tools (`graph_auth`, `graph_get`, `graph_post`, `graph_docs`). Configure it in your client:
-
-**VS Code / Cursor (`.vscode/mcp.json`):**
-
-```json
-{
-  "servers": {
-    "microsoft-graph": {
-      "command": "node",
-      "args": ["/path/to/microsoft-graph-skill/src/mcp/server.js"]
-    }
-  }
-}
-```
-
-**Claude Desktop (`claude_desktop_config.json`):**
-
-```json
-{
-  "mcpServers": {
-    "microsoft-graph": {
-      "command": "node",
-      "args": ["/path/to/microsoft-graph-skill/src/mcp/server.js"]
-    }
-  }
-}
-```
+Copy `.claude/skills/mg-api` into the agent's skill directory and install the package dependencies from this repo. The skill routes agents to `mg-api`.
 
 ## Auth
 
-The agent authenticates automatically when the skill is invoked. Playwright launches a persistent Edge browser context — first run opens Edge for login (one-time), then it's instant and headless. No app registration, no client ID, no tenant config, no secrets.
+`mg-api auth login` uses Playwright with Microsoft Edge persistent context. First run may open Edge for interactive login. Subsequent runs use the saved browser profile headlessly. The flow visits Outlook Web, Teams, a Teams chat URL, and an Office page so the browser issues bearer tokens for each audience.
 
-The auth flow navigates to Outlook and Teams to capture two bearer tokens:
-- **Graph token** — for Graph API calls (`graph.microsoft.com`)
-- **Outlook token** — for send/reply email and chat operations (`outlook.office.com`)
+- Browser profile: `~/.mg-api/browser-profile/`
+- Auth file: `~/.mg-api/auth.json`
+- Force re-login: `mg-api auth login --force`
+- Clear auth: `mg-api auth logout`
 
-Credentials persist in `~/.microsoft-graph-skill/auth.json` (works across shell sessions). Use `--login` to force re-login, `--logout` to clear the profile.
-
-## Evals
-
-Evals covering auth, email, calendar, Teams, and user operations:
-
-```claude
-Run evals/run-evals.md
-```
-
-Results are written to `evals/results/`. See the eval files for the full list and scoring criteria.
-
-> **Safe for your real account.** Evals are non-destructive: test emails are sent to yourself and auto-deleted, calendar events are created and auto-deleted, and Teams messages go to a private sandbox chat (only you as member). All test data uses the `MICROSOFT_GRAPH_SKILL_EVAL_` prefix and is cleaned up automatically.
+No app registration, client ID, tenant config, or secret is required.
 
 ## Tests
 
 ```bash
-npm test                    # Static tests (no network)
-npm run test:core           # Unit tests for core modules
-npm run test:mcp            # MCP server tests
+npm run build
+npm test
+npm run test:integration
 ```
 
-## Prerequisites
+`npm run build` validates generated artifacts and the `mg-api` bin before local linking or publishing. `npm link` and `npm run link:local` are supported for local development. For linked or git-clone installs, `mg-api update` pulls with `git pull --ff-only`, skips install/build when already current, and otherwise runs `npm install --no-audit --no-fund` plus `npm run build`.
 
-- **Node.js 18+**
-- **Microsoft Edge** (Playwright uses your system Edge)
-- `npm install` (one-time, installs Playwright + MCP SDK)
+`npm test` covers the `mg-api` registry, schema generation, help generation, JSON envelopes, Graph auth/REST internals, no raw fallback, auth isolation, package bin wiring, and SKILL router sync.
 
-## Contributing
+`npm run test:integration` is the live Microsoft Graph test suite and requires a cached login.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, project structure, and how to modify scripts, evals, and reference docs.
+## Docs
+
+- [`docs/AGENTIC_CONTRACT.md`](docs/AGENTIC_CONTRACT.md) — `mg-api` stdout/stderr, schema, help, and command contract
+- [`docs/setup-guide.md`](docs/setup-guide.md) — install and auth
+- [`docs/architecture.md`](docs/architecture.md) — registry, CLI, auth, and token-routing architecture
+- [`docs/api-coverage.md`](docs/api-coverage.md) — current and planned capability coverage
+- [`docs/auth-deep-dive.md`](docs/auth-deep-dive.md) — Playwright persistent-context auth details
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development workflow
 
 ## License
 

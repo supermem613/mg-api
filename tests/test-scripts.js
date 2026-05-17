@@ -1,264 +1,377 @@
 #!/usr/bin/env node
-// Dry-run script validation — no network calls
-// Run: node --test tests/test-scripts.js
+'use strict';
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { execSync } = require('node:child_process');
-const { existsSync, readFileSync, readdirSync } = require('node:fs');
+const { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } = require('node:fs');
+const { tmpdir } = require('node:os');
 const { join } = require('node:path');
+const { pathToFileURL } = require('node:url');
+const {
+  authenticate,
+  authStatus,
+  classifyToken,
+  decodeJwtPayload,
+  hasChatScopes,
+  hasMailScopes,
+  isLoginUrl,
+  logout,
+  readAuthFile,
+} = require('../src/graph-auth');
+const {
+  executeGraphRequest,
+  loadAuth,
+  parseResponseBody,
+  resolveBase,
+  resolveToken,
+} = require('../src/graph-rest');
+const { extractCode, formatError, graphFetch } = require('../src/graph-fetch');
 
-const ROOT = join(__dirname, '..');
-const coreDir = join(ROOT, 'src', 'core');
-const cliDir = join(ROOT, 'src', 'cli');
-const srcDir = join(ROOT, 'src');
-
-const CORE_SCRIPTS = ['mg-auth.js', 'mg-client.js', 'mg-env.js', 'mg-fetch.js'];
-const CLI_SCRIPTS = ['mg-auth-cli.js', 'mg-get.js', 'mg-post.js'];
-const ALL_SCRIPTS = [
-  ...CORE_SCRIPTS.map(s => ({ name: s, dir: coreDir })),
-  ...CLI_SCRIPTS.map(s => ({ name: s, dir: cliDir })),
-];
-
-/**
- * Run a Node.js script in a child process with a clean env.
- * Returns { exitCode, stdout, stderr }.
- */
-function runScript(dir, scriptName, args = [], env = {}) {
-  const scriptPath = join(dir, scriptName);
-  const fakeHome = join(__dirname, '.test-home');
-  const cleanEnv = {
-    PATH: process.env.PATH,
-    HOME: fakeHome,
-    USERPROFILE: fakeHome,
-    HOMEDRIVE: fakeHome.slice(0, 2),
-    HOMEPATH: fakeHome.slice(2),
-    SystemRoot: process.env.SystemRoot || '',
-    ...env
-  };
-  try {
-    const stdout = execSync(`node "${scriptPath}" ${args.map(a => `"${a}"`).join(' ')}`, {
-      env: cleanEnv, encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe']
-    });
-    return { exitCode: 0, stdout, stderr: '' };
-  } catch (e) {
-    return { exitCode: e.status ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
-  }
+function encodeJwt(payload) {
+  const b64 = Buffer.from(JSON.stringify(payload)).toString('base64')
+    .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+  return `header.${b64}.signature`;
 }
 
-/**
- * Read script source for static analysis tests.
- */
-function readScript(dir, scriptName) {
-  return readFileSync(join(dir, scriptName), 'utf8');
-}
-
-/** Recursively collect all file paths under a directory. */
-function getAllFiles(dir) {
-  const results = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) results.push(...getAllFiles(full));
-    else results.push(full);
-  }
-  return results;
-}
-
-// ============================================================================
-// 1. File existence
-// ============================================================================
-describe('File existence', () => {
-  for (const s of CORE_SCRIPTS) {
-    it(`src/core/${s} exists`, () => {
-      assert.ok(existsSync(join(coreDir, s)), `${s} not found`);
-    });
-  }
-  for (const s of CLI_SCRIPTS) {
-    it(`src/cli/${s} exists`, () => {
-      assert.ok(existsSync(join(cliDir, s)), `${s} not found`);
-    });
-  }
-});
-
-// ============================================================================
-// 2. Shebang line
-// ============================================================================
-describe('Has shebang line', () => {
-  for (const { name, dir } of ALL_SCRIPTS) {
-    it(`${name} has node shebang`, () => {
-      const first = readScript(dir, name).split(/\r?\n/)[0];
-      assert.match(first, /^#!.*node/, `${name} should have node shebang`);
-    });
-  }
-});
-
-// ============================================================================
-// 3. 'use strict'
-// ============================================================================
-describe('Uses strict mode', () => {
-  for (const { name, dir } of ALL_SCRIPTS) {
-    it(`${name} has 'use strict'`, () => {
-      const content = readScript(dir, name);
-      assert.match(content, /['"]use strict['"]/, `${name} should use strict mode`);
-    });
-  }
-});
-
-// ============================================================================
-// 4. Error on missing arguments
-// ============================================================================
-describe('Error on missing arguments', () => {
-  it('mg-get.js fails with no args', () => {
-    const r = runScript(cliDir, 'mg-get.js');
-    assert.notStrictEqual(r.exitCode, 0, 'Expected non-zero exit code');
-  });
-
-  it('mg-post.js fails with no args', () => {
-    const r = runScript(cliDir, 'mg-post.js');
-    assert.notStrictEqual(r.exitCode, 0, 'Expected non-zero exit code');
+describe('mg-api source ownership', () => {
+  it('keeps implementation logic in src instead of the skill directory', () => {
+    assert.ok(existsSync(join(__dirname, '..', 'src', 'graph-auth.js')));
+    assert.ok(existsSync(join(__dirname, '..', 'src', 'graph-rest.js')));
+    assert.ok(existsSync(join(__dirname, '..', 'src', 'graph-fetch.js')));
+    assert.strictEqual(existsSync(join(__dirname, '..', '.claude', 'skills', 'mg-api', 'scripts')), false);
+    assert.strictEqual(existsSync(join(__dirname, '..', 'src', 'mcp')), false);
+    assert.strictEqual(existsSync(join(__dirname, '..', 'src', 'cli')), false);
+    assert.strictEqual(existsSync(join(__dirname, '..', 'src', 'core')), false);
   });
 });
 
-// ============================================================================
-// 5. Error on missing auth
-// ============================================================================
-describe('Error on missing auth', () => {
-  it('mg-get.js with endpoint but no auth mentions mg-auth', () => {
-    const r = runScript(cliDir, 'mg-get.js', ['/me/messages']);
-    assert.notStrictEqual(r.exitCode, 0);
-    assert.match(r.stderr, /mg-auth/, 'Error should mention mg-auth');
+describe('Graph auth module', () => {
+  it('decodes JWT payloads and classifies token audience', () => {
+    const graph = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+    assert.deepStrictEqual(decodeJwtPayload(graph), { aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+    assert.deepStrictEqual(classifyToken(graph), { type: 'graph', scopes: ['Mail.ReadWrite', 'User.Read'] });
+
+    const outlook = encodeJwt({ aud: 'https://outlook.office.com', scp: 'Mail.Send' });
+    assert.deepStrictEqual(classifyToken(outlook), { type: 'outlook', scopes: ['Mail.Send'] });
+
+    const unknown = encodeJwt({ aud: 'https://example.com', scp: '' });
+    assert.strictEqual(classifyToken(unknown), null);
+    assert.strictEqual(decodeJwtPayload('not-a-jwt'), null);
   });
 
-  it('mg-post.js with endpoint but no auth mentions mg-auth', () => {
-    const r = runScript(cliDir, 'mg-post.js', ['/me/events', '{}']);
-    assert.notStrictEqual(r.exitCode, 0);
-    assert.match(r.stderr, /mg-auth/, 'Error should mention mg-auth');
-  });
-});
-
-// ============================================================================
-// 6. mg-auth.js validation
-// ============================================================================
-describe('mg-auth.js validation', () => {
-  const content = readScript(coreDir, 'mg-auth.js');
-
-  it('uses playwright', () => {
-    assert.match(content, /playwright/, 'mg-auth.js should use playwright');
+  it('detects mail and chat scopes case-insensitively', () => {
+    assert.strictEqual(hasMailScopes(['Mail.ReadWrite', 'User.Read']), true);
+    assert.strictEqual(hasMailScopes(['mail.read']), true);
+    assert.strictEqual(hasMailScopes(['Chat.Read']), false);
+    assert.strictEqual(hasChatScopes(['Chat.Read']), true);
+    assert.strictEqual(hasChatScopes(['CHAT.READWRITE']), true);
+    assert.strictEqual(hasChatScopes(['Mail.Read']), false);
   });
 
-  it('handles --login flag', () => {
-    assert.match(content, /--login/, 'mg-auth.js should handle --login flag');
+  it('detects Microsoft login URLs', () => {
+    assert.strictEqual(isLoginUrl('https://login.microsoftonline.com/common'), true);
+    assert.strictEqual(isLoginUrl('https://login.microsoft.com/oauth2'), true);
+    assert.strictEqual(isLoginUrl('https://login.live.com/'), true);
+    assert.strictEqual(isLoginUrl('https://outlook.office.com/mail/'), false);
+    assert.strictEqual(isLoginUrl('not-a-url'), false);
   });
 
-  it('handles --logout flag', () => {
-    assert.match(content, /--logout/, 'mg-auth.js should handle --logout flag');
-  });
-
-  it('writes auth.json', () => {
-    assert.match(content, /auth\.json/, 'mg-auth.js should write auth.json');
-  });
-});
-
-// ============================================================================
-// 7. mg-env.js validation
-// ============================================================================
-describe('mg-env.js validation', () => {
-  const content = readScript(coreDir, 'mg-env.js');
-
-  it('reads from auth.json', () => {
-    assert.match(content, /auth\.json/, 'mg-env.js should read auth.json');
-  });
-
-  it('checks process.env', () => {
-    assert.match(content, /process\.env/, 'mg-env.js should check process.env');
-  });
-});
-
-// ============================================================================
-// 8. mg-fetch.js validation
-// ============================================================================
-describe('mg-fetch.js validation', () => {
-  const content = readScript(coreDir, 'mg-fetch.js');
-
-  it('exports graphFetch function', () => {
-    assert.match(content, /graphFetch/, 'mg-fetch.js should export graphFetch');
-  });
-
-  it('has retry logic', () => {
-    assert.match(content, /RETRYABLE|retry/i, 'mg-fetch.js should have retry logic');
-  });
-
-  it('walks error cause chain', () => {
-    assert.match(content, /\.cause/, 'mg-fetch.js should walk error cause chain');
-  });
-});
-
-// ============================================================================
-// 9. No shell scripts in src/
-// ============================================================================
-describe('No shell scripts in src/', () => {
-  const allFiles = getAllFiles(srcDir);
-
-  it('no .sh files', () => {
-    const shFiles = allFiles.filter(f => f.endsWith('.sh'));
-    assert.deepStrictEqual(shFiles, [], `Unexpected .sh files: ${shFiles.join(', ')}`);
-  });
-
-  it('no .ps1 files', () => {
-    const ps1Files = allFiles.filter(f => f.endsWith('.ps1'));
-    assert.deepStrictEqual(ps1Files, [], `Unexpected .ps1 files: ${ps1Files.join(', ')}`);
-  });
-});
-
-// ============================================================================
-// 10. All scripts are Node.js
-// ============================================================================
-describe('All scripts are Node.js', () => {
-  it('every file in src/ is a .js file', () => {
-    const allFiles = getAllFiles(srcDir);
-    for (const f of allFiles) {
-      assert.ok(f.endsWith('.js'), `Non-JS file found: ${f}`);
-    }
-  });
-});
-
-// ============================================================================
-// 11. No external npm deps in CLI scripts
-// ============================================================================
-describe('No external npm dependencies in CLI scripts', () => {
-  for (const s of ['mg-get.js', 'mg-post.js']) {
-    it(`${s} only requires local modules`, () => {
-      const content = readScript(cliDir, s);
-      const requires = content.match(/require\s*\(\s*['"]([^'"]+)['"]\s*\)/g) || [];
-      for (const r of requires) {
-        assert.match(r, /['"]\.\.?\//, `${s} should only require local modules, found: ${r}`);
-      }
-    });
-  }
-});
-
-// ============================================================================
-// 12. SKILL.md exists
-// ============================================================================
-describe('SKILL.md exists', () => {
-  it('SKILL.md in .github/skills/microsoft-graph/', () => {
-    const skillMd = join(ROOT, '.github', 'skills', 'microsoft-graph', 'SKILL.md');
-    assert.ok(existsSync(skillMd), 'SKILL.md not found in .github/skills/microsoft-graph/');
-  });
-});
-
-// ============================================================================
-// 13. Reference files exist
-// ============================================================================
-describe('Reference files exist', () => {
-  const refDir = join(ROOT, 'references');
-  const refFiles = ['email.md', 'calendar.md', 'teams.md', 'users.md', 'api-patterns.md'];
-
-  if (existsSync(refDir)) {
-    for (const f of refFiles) {
-      it(`references/${f} exists`, () => {
-        assert.ok(existsSync(join(refDir, f)), `references/${f} not found`);
+  it('reports auth status from the auth file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-auth-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      writeFileSync(authFile, JSON.stringify({
+        GRAPH_TOKEN: 'g',
+        OUTLOOK_TOKEN: 'o',
+        GRAPH_SCOPES: ['Mail.Read'],
+      }));
+      assert.deepStrictEqual(authStatus(authFile), {
+        authFile,
+        exists: true,
+        hasGraphToken: true,
+        hasOutlookToken: true,
+        hasChatToken: false,
+        graphScopes: ['Mail.Read'],
+        outlookScopes: [],
+        chatScopes: [],
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-  }
+  });
+
+  it('reports missing auth as not existing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-auth-missing-'));
+    try {
+      const status = authStatus(join(dir, 'auth.json'));
+      assert.strictEqual(status.exists, false);
+      assert.strictEqual(status.hasGraphToken, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('logs out by clearing auth state paths', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-logout-'));
+    try {
+      const profileDir = join(dir, 'profile');
+      const authFile = join(dir, 'auth.json');
+      writeFileSync(authFile, '{}');
+      mkdirSync(profileDir);
+      const result = logout({ profileDir, authFile });
+      assert.strictEqual(result.cleared, true);
+      assert.strictEqual(existsSync(authFile), false);
+      assert.strictEqual(existsSync(profileDir), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('authenticates with injectable Playwright and writes auth.json', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-playwright-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const graphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+      const outlookToken = encodeJwt({ aud: 'https://outlook.office.com', scp: 'Mail.Send' });
+      const chatToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Chat.ReadWrite Mail.Read' });
+
+      function makePage(authHeaders) {
+        let handler;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async () => {
+            for (const auth of authHeaders) {
+              if (handler) handler({ headers: () => ({ authorization: auth }) });
+            }
+          },
+          url: () => 'https://outlook.office.com/mail/',
+          waitForLoadState: async () => {},
+          waitForURL: async () => {},
+        };
+      }
+      const outlookPage = makePage([`Bearer ${graphToken}`, `Bearer ${outlookToken}`]);
+      const teamsPage = makePage([`Bearer ${chatToken}`]);
+      const officePage = makePage([]);
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({ playwright, authFile, profileDir: join(dir, 'profile') });
+      assert.strictEqual(result.GRAPH_TOKEN, graphToken);
+      assert.strictEqual(result.OUTLOOK_TOKEN, outlookToken);
+      assert.strictEqual(result.GRAPH_CHAT_TOKEN, chatToken);
+      const persisted = readAuthFile(authFile);
+      assert.strictEqual(persisted.GRAPH_TOKEN, graphToken);
+      assert.deepStrictEqual(persisted.GRAPH_SCOPES, ['Mail.ReadWrite', 'User.Read']);
+      assert.deepStrictEqual(persisted.OUTLOOK_SCOPES, ['Mail.Send']);
+      assert.deepStrictEqual(persisted.GRAPH_CHAT_SCOPES, ['Chat.ReadWrite', 'Mail.Read']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws a clear error when no tokens are captured', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-no-token-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const emptyPage = {
+        on: () => {},
+        goto: async () => {},
+        url: () => 'https://outlook.office.com/mail/',
+        waitForLoadState: async () => {},
+        waitForURL: async () => {},
+      };
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [emptyPage],
+            newPage: async () => emptyPage,
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+      await assert.rejects(
+        () => authenticate({ playwright, authFile, profileDir: join(dir, 'profile') }),
+        /No tokens captured/,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Graph REST module', () => {
+  it('rejects missing or empty auth files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-rest-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      assert.throws(() => loadAuth(authFile), /Run mg-api auth login/);
+      writeFileSync(authFile, JSON.stringify({}));
+      assert.throws(() => loadAuth(authFile), /Graph or Outlook token/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('parses JSON, text, and empty response bodies', () => {
+    assert.deepStrictEqual(parseResponseBody('{"value":1}'), { value: 1 });
+    assert.strictEqual(parseResponseBody('plain'), 'plain');
+    assert.strictEqual(parseResponseBody(''), null);
+  });
+
+  it('resolves token and base from the verb spec', () => {
+    const auth = { GRAPH_TOKEN: 'g', OUTLOOK_TOKEN: 'o', GRAPH_CHAT_TOKEN: 'c' };
+    assert.strictEqual(resolveToken({ id: 'x.y', token: 'graph' }, auth), 'g');
+    assert.strictEqual(resolveToken({ id: 'x.y', token: 'outlook' }, auth), 'o');
+    assert.strictEqual(resolveToken({ id: 'x.y', token: 'chat' }, auth), 'c');
+    assert.strictEqual(resolveBase({ base: 'graph' }), 'https://graph.microsoft.com/v1.0');
+    assert.strictEqual(resolveBase({ base: 'outlook' }), 'https://outlook.office.com/api/v2.0');
+  });
+
+  it('falls back to the graph token when chat is requested but not cached', () => {
+    const auth = { GRAPH_TOKEN: 'g', OUTLOOK_TOKEN: 'o' };
+    assert.strictEqual(resolveToken({ id: 'x.y', token: 'chat' }, auth), 'g');
+  });
+
+  it('throws when the requested token is not present', () => {
+    assert.throws(() => resolveToken({ id: 'x.y', token: 'outlook' }, { GRAPH_TOKEN: 'g' }), /Outlook token/);
+    assert.throws(() => resolveToken({ id: 'x.y', token: 'graph' }, { OUTLOOK_TOKEN: 'o' }), /Graph token/);
+  });
+
+  it('executes GET requests through the built-in REST client with the right token', async () => {
+    const calls = [];
+    const result = await executeGraphRequest(
+      { id: 'email.list', method: 'GET', token: 'graph', base: 'graph' },
+      '/me/messages?%24top=5',
+      '',
+      {
+        auth: { GRAPH_TOKEN: 'graph-tok', OUTLOOK_TOKEN: 'out-tok' },
+        fetch: async (url, options) => {
+          calls.push({ url, options });
+          return { ok: true, status: 200, text: async () => '{"value":[]}' };
+        },
+      },
+    );
+    assert.deepStrictEqual(result.data, { value: [] });
+    assert.strictEqual(calls[0].url, 'https://graph.microsoft.com/v1.0/me/messages?%24top=5');
+    assert.strictEqual(calls[0].options.method, 'GET');
+    assert.strictEqual(calls[0].options.headers.Authorization, 'Bearer graph-tok');
+    assert.strictEqual(result.token, 'graph');
+    assert.strictEqual(result.base, 'graph');
+  });
+
+  it('sends POST bodies with content type and the outlook base when configured', async () => {
+    const calls = [];
+    await executeGraphRequest(
+      { id: 'email.send', method: 'POST', token: 'outlook', base: 'outlook' },
+      '/me/sendmail',
+      '{"Message":{"Subject":"hi"}}',
+      {
+        auth: { OUTLOOK_TOKEN: 'out-tok' },
+        fetch: async (url, options) => {
+          calls.push({ url, options });
+          return { ok: true, status: 202, text: async () => '' };
+        },
+      },
+    );
+    assert.strictEqual(calls[0].url, 'https://outlook.office.com/api/v2.0/me/sendmail');
+    assert.strictEqual(calls[0].options.method, 'POST');
+    assert.strictEqual(calls[0].options.headers['Content-Type'], 'application/json');
+    assert.strictEqual(calls[0].options.headers.Authorization, 'Bearer out-tok');
+    assert.strictEqual(calls[0].options.body, '{"Message":{"Subject":"hi"}}');
+  });
+
+  it('selects the chat token for chat-scoped verbs', async () => {
+    const calls = [];
+    await executeGraphRequest(
+      { id: 'chats.send', method: 'POST', token: 'chat', base: 'graph' },
+      '/chats/19%3Aabc/messages',
+      '{"body":{"content":"hi"}}',
+      {
+        auth: { GRAPH_TOKEN: 'g', GRAPH_CHAT_TOKEN: 'c' },
+        fetch: async (url, options) => {
+          calls.push({ url, options });
+          return { ok: true, status: 201, text: async () => '{}' };
+        },
+      },
+    );
+    assert.strictEqual(calls[0].options.headers.Authorization, 'Bearer c');
+  });
+
+  it('throws on non-2xx responses with the status and method', async () => {
+    await assert.rejects(
+      () => executeGraphRequest(
+        { id: 'email.list', method: 'GET', token: 'graph', base: 'graph' },
+        '/me/messages',
+        '',
+        {
+          auth: { GRAPH_TOKEN: 'g' },
+          fetch: async () => ({ ok: false, status: 403, text: async () => 'forbidden' }),
+        },
+      ),
+      /HTTP 403 on GET/,
+    );
+  });
+});
+
+describe('Graph fetch module', () => {
+  it('walks nested error causes', () => {
+    assert.strictEqual(extractCode({ cause: { code: 'ETIMEDOUT' } }), 'ETIMEDOUT');
+    assert.strictEqual(extractCode({ errors: [{ code: 'ECONNRESET' }] }), 'ECONNRESET');
+    assert.strictEqual(extractCode({ message: 'plain' }), null);
+  });
+
+  it('formats actionable network errors', () => {
+    assert.match(formatError({ message: 'failed', code: 'ENOTFOUND' }), /Hint: DNS lookup failed/);
+    assert.match(formatError({ message: 'down', code: 'ECONNREFUSED' }), /Hint: Connection refused/);
+    assert.match(formatError({ message: 'slow', code: 'ETIMEDOUT' }), /Hint: Connection timed out/);
+  });
+
+  it('retries retryable fetch failures without shelling out', async () => {
+    let attempts = 0;
+    const response = await graphFetch(pathToFileURL(__filename).toString(), {}, {
+      fetch: async () => {
+        attempts++;
+        if (attempts === 1) {
+          const err = new Error('timeout');
+          err.code = 'ETIMEDOUT';
+          throw err;
+        }
+        return { ok: true };
+      },
+    });
+    assert.strictEqual(response.ok, true);
+    assert.strictEqual(attempts, 2);
+  });
+
+  it('retries on HTTP 429 honoring Retry-After', async () => {
+    let attempts = 0;
+    const response = await graphFetch('https://example.com', {}, {
+      fetch: async () => {
+        attempts++;
+        if (attempts === 1) {
+          return {
+            ok: false,
+            status: 429,
+            headers: { get: name => (name === 'Retry-After' ? '0' : null) },
+            text: async () => '',
+          };
+        }
+        return { ok: true, status: 200, text: async () => '{}' };
+      },
+    });
+    assert.strictEqual(response.ok, true);
+    assert.strictEqual(attempts, 2);
+  });
 });
