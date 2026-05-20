@@ -46,7 +46,7 @@ Tokens are saved to `~/.mg-api/auth.json`:
 |-------|-------------|
 | `GRAPH_TOKEN` | Bearer for `graph.microsoft.com` |
 | `OUTLOOK_TOKEN` | Bearer for Outlook REST v2.0 (`outlook.office.com`) |
-| `GRAPH_CHAT_TOKEN` | Graph bearer with `Chat.*` scopes (Teams chats/channels) |
+| `GRAPH_CHAT_TOKEN` | Graph bearer with Teams chat or channel-message scopes |
 | `GRAPH_SCOPES`, `OUTLOOK_SCOPES`, `GRAPH_CHAT_SCOPES` | Scope arrays for diagnostics |
 
 The auth file is an implementation detail consumed by `mg-api` and its internal helpers. Agents should not read or write it directly.

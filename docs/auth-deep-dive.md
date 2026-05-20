@@ -42,7 +42,7 @@ Bearer tokens for three audiences are stored in `~/.mg-api/auth.json`:
 |-------|-----------------|---------|
 | `GRAPH_TOKEN` | `https://graph.microsoft.com` | Most read verbs |
 | `OUTLOOK_TOKEN` | `https://outlook.office.com` / `outlook.office365.com` | `email send|reply`, `chats list|messages` |
-| `GRAPH_CHAT_TOKEN` | Graph audience with `Chat.*` scopes | `teams list-channels|send-channel-message`, `chats send` |
+| `GRAPH_CHAT_TOKEN` | Graph audience with Teams chat or channel-message scopes | `teams list-channels|send-channel-message`, `chats send` |
 | `GRAPH_SCOPES`, `OUTLOOK_SCOPES`, `GRAPH_CHAT_SCOPES` | JWT `scp` claim | Diagnostics |
 
 Tokens are short-lived (typically 60–90 minutes). Re-run `mg-api auth login` when they expire — the persistent profile usually refreshes silently.

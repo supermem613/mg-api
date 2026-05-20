@@ -85,7 +85,18 @@ function hasMailScopes(scopes) {
 }
 
 function hasChatScopes(scopes) {
-  return scopes.some(s => /^chat\.(read|readwrite)$/i.test(s));
+  return scopes.some(s => /^(chat\.read|chat\.readwrite|chat\.readwrite\.all|channelmessage\.read\.all)$/i.test(s));
+}
+
+function hasChannelMessageScopes(scopes) {
+  return scopes.some(s => /^channelmessage\.read\.all$/i.test(s));
+}
+
+function compareTeamsTokenScopes(candidateScopes, currentScopes) {
+  const candidateChannel = hasChannelMessageScopes(candidateScopes);
+  const currentChannel = hasChannelMessageScopes(currentScopes);
+  if (candidateChannel !== currentChannel) return candidateChannel ? 1 : -1;
+  return candidateScopes.length - currentScopes.length;
 }
 
 async function authenticate(options = {}) {
@@ -120,7 +131,7 @@ async function authenticate(options = {}) {
           captured.graph = token;
           captured.graphScopes = info.scopes;
         }
-        if (hasChatScopes(info.scopes) && info.scopes.length > captured.graphChatScopes.length) {
+        if (hasChatScopes(info.scopes) && compareTeamsTokenScopes(info.scopes, captured.graphChatScopes) > 0) {
           captured.graphChat = token;
           captured.graphChatScopes = info.scopes;
         }
