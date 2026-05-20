@@ -97,10 +97,13 @@ describe('Graph auth module', () => {
         hasOutlookToken: true,
         hasChatToken: false,
         hasChannelMessageToken: false,
+        hasOutlookChannelMessageToken: false,
         channelMessageScopeObserved: false,
+        outlookChannelMessageScopeObserved: false,
         teamsChannelProbe: null,
         graphScopes: ['Mail.Read'],
         outlookScopes: [],
+        outlookChannelMessageScopes: [],
         chatScopes: [],
       });
     } finally {
@@ -141,6 +144,7 @@ describe('Graph auth module', () => {
       const authFile = join(dir, 'auth.json');
       const graphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
       const outlookToken = encodeJwt({ aud: 'https://outlook.office.com', scp: 'Mail.Send' });
+      const outlookChannelMessageToken = encodeJwt({ aud: 'https://outlook.office.com', scp: 'ChannelMessage.Read.All Mail.Send' });
       const chatToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'ChannelMessage.Read.All' });
 
       function makePage(authHeaders) {
@@ -157,7 +161,7 @@ describe('Graph auth module', () => {
           waitForURL: async () => {},
         };
       }
-      const outlookPage = makePage([`Bearer ${graphToken}`, `Bearer ${outlookToken}`]);
+      const outlookPage = makePage([`Bearer ${graphToken}`, `Bearer ${outlookToken}`, `Bearer ${outlookChannelMessageToken}`]);
       const teamsPage = makePage([`Bearer ${chatToken}`]);
       const officePage = makePage([]);
       let nextPage = 0;
@@ -176,13 +180,76 @@ describe('Graph auth module', () => {
 
       const result = await authenticate({ playwright, authFile, profileDir: join(dir, 'profile') });
       assert.strictEqual(result.GRAPH_TOKEN, graphToken);
-      assert.strictEqual(result.OUTLOOK_TOKEN, outlookToken);
+      assert.strictEqual(result.OUTLOOK_TOKEN, outlookChannelMessageToken);
+      assert.strictEqual(result.OUTLOOK_CHANNEL_MESSAGE_TOKEN, outlookChannelMessageToken);
       assert.strictEqual(result.GRAPH_CHAT_TOKEN, chatToken);
       const persisted = readAuthFile(authFile);
       assert.strictEqual(persisted.GRAPH_TOKEN, graphToken);
       assert.deepStrictEqual(persisted.GRAPH_SCOPES, ['Mail.ReadWrite', 'User.Read']);
-      assert.deepStrictEqual(persisted.OUTLOOK_SCOPES, ['Mail.Send']);
+      assert.deepStrictEqual(persisted.OUTLOOK_SCOPES, ['ChannelMessage.Read.All', 'Mail.Send']);
+      assert.strictEqual(persisted.OUTLOOK_CHANNEL_MESSAGE_TOKEN, outlookChannelMessageToken);
+      assert.deepStrictEqual(persisted.OUTLOOK_CHANNEL_MESSAGE_SCOPES, ['ChannelMessage.Read.All', 'Mail.Send']);
       assert.deepStrictEqual(persisted.GRAPH_CHAT_SCOPES, ['ChannelMessage.Read.All']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists Outlook-audience ChannelMessage.Read.All separately from Graph chat tokens', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-outlook-channel-token-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const graphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+      const chatToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Chat.Read' });
+      const outlookChannelMessageToken = encodeJwt({ aud: 'https://outlook.office.com', scp: 'ChannelMessage.Read.All Chat.ReadWrite.All Mail.Send' });
+
+      function makePage(authHeaders) {
+        let handler;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async () => {
+            for (const auth of authHeaders) {
+              if (handler) handler({ headers: () => ({ authorization: auth }) });
+            }
+          },
+          locator: () => ({ count: async () => 0 }),
+          url: () => 'https://outlook.office.com/mail/',
+          waitForLoadState: async () => {},
+          waitForRequest: async () => {},
+          waitForURL: async () => {},
+        };
+      }
+
+      const outlookPage = makePage([`Bearer ${graphToken}`, `Bearer ${outlookChannelMessageToken}`]);
+      const teamsPage = makePage([`Bearer ${chatToken}`]);
+      const officePage = makePage([]);
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({
+        playwright,
+        fetch: async () => ({ ok: true, status: 200, json: async () => ({ value: [] }) }),
+        authFile,
+        profileDir: join(dir, 'profile'),
+      });
+      assert.strictEqual(result.GRAPH_CHAT_TOKEN, chatToken);
+      assert.strictEqual(result.CHANNEL_MESSAGE_SCOPE_OBSERVED, false);
+      assert.strictEqual(result.OUTLOOK_CHANNEL_MESSAGE_TOKEN, outlookChannelMessageToken);
+      assert.strictEqual(result.OUTLOOK_CHANNEL_MESSAGE_SCOPE_OBSERVED, true);
+      const status = authStatus(authFile);
+      assert.strictEqual(status.hasChannelMessageToken, false);
+      assert.strictEqual(status.hasOutlookChannelMessageToken, true);
+      assert.deepStrictEqual(status.outlookChannelMessageScopes, ['ChannelMessage.Read.All', 'Chat.ReadWrite.All', 'Mail.Send']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

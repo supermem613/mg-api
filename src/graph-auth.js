@@ -41,7 +41,9 @@ function readAuthFile(authFile = AUTH_FILE) {
 function authStatus(authFile = AUTH_FILE) {
   const parsed = readAuthFile(authFile);
   const chatScopes = parsed?.GRAPH_CHAT_SCOPES || [];
+  const outlookChannelMessageScopes = parsed?.OUTLOOK_CHANNEL_MESSAGE_SCOPES || [];
   const channelMessageScopeObserved = hasChannelMessageScopes(chatScopes);
+  const outlookChannelMessageScopeObserved = hasChannelMessageScopes(outlookChannelMessageScopes);
   return {
     authFile,
     exists: !!parsed,
@@ -49,10 +51,13 @@ function authStatus(authFile = AUTH_FILE) {
     hasOutlookToken: !!parsed?.OUTLOOK_TOKEN,
     hasChatToken: !!parsed?.GRAPH_CHAT_TOKEN,
     hasChannelMessageToken: !!parsed?.GRAPH_CHAT_TOKEN && channelMessageScopeObserved,
+    hasOutlookChannelMessageToken: !!parsed?.OUTLOOK_CHANNEL_MESSAGE_TOKEN && outlookChannelMessageScopeObserved,
     channelMessageScopeObserved,
+    outlookChannelMessageScopeObserved,
     teamsChannelProbe: parsed?.TEAMS_CHANNEL_PROBE || null,
     graphScopes: parsed?.GRAPH_SCOPES || [],
     outlookScopes: parsed?.OUTLOOK_SCOPES || [],
+    outlookChannelMessageScopes,
     chatScopes,
   };
 }
@@ -244,6 +249,7 @@ async function authenticate(options = {}) {
     graph: null, graphScopes: [],
     graphChat: null, graphChatScopes: [],
     outlook: null, outlookScopes: [],
+    outlookChannelMessage: null, outlookChannelMessageScopes: [],
     channelProbe: { attempted: false, opened: false, observed: false },
   };
 
@@ -267,6 +273,12 @@ async function authenticate(options = {}) {
     } else if (info.type === 'outlook' && info.scopes.length > captured.outlookScopes.length) {
       captured.outlook = token;
       captured.outlookScopes = info.scopes;
+    }
+    if (info.type === 'outlook'
+      && hasChannelMessageScopes(info.scopes)
+      && compareTeamsTokenScopes(info.scopes, captured.outlookChannelMessageScopes) > 0) {
+      captured.outlookChannelMessage = token;
+      captured.outlookChannelMessageScopes = info.scopes;
     }
     return info;
   }
@@ -358,7 +370,8 @@ async function authenticate(options = {}) {
   await settlePage(officePage);
 
   const channelMessageScopeObserved = hasChannelMessageScopes(captured.graphChatScopes);
-  log(`captured: graph=${!!captured.graph} chat=${!!captured.graphChat} channelMessage=${channelMessageScopeObserved} outlook=${!!captured.outlook}`);
+  const outlookChannelMessageScopeObserved = hasChannelMessageScopes(captured.outlookChannelMessageScopes);
+  log(`captured: graph=${!!captured.graph} chat=${!!captured.graphChat} channelMessage=${channelMessageScopeObserved} outlook=${!!captured.outlook} outlookChannelMessage=${outlookChannelMessageScopeObserved}`);
   await context.close();
 
   if (!captured.graph && !captured.outlook) {
@@ -369,10 +382,13 @@ async function authenticate(options = {}) {
     ...(captured.graph && { GRAPH_TOKEN: captured.graph }),
     ...(captured.graphChat && { GRAPH_CHAT_TOKEN: captured.graphChat }),
     ...(captured.outlook && { OUTLOOK_TOKEN: captured.outlook }),
+    ...(captured.outlookChannelMessage && { OUTLOOK_CHANNEL_MESSAGE_TOKEN: captured.outlookChannelMessage }),
     ...(captured.graphScopes.length && { GRAPH_SCOPES: captured.graphScopes }),
     ...(captured.graphChatScopes.length && { GRAPH_CHAT_SCOPES: captured.graphChatScopes }),
     ...(captured.outlookScopes.length && { OUTLOOK_SCOPES: captured.outlookScopes }),
+    ...(captured.outlookChannelMessageScopes.length && { OUTLOOK_CHANNEL_MESSAGE_SCOPES: captured.outlookChannelMessageScopes }),
     CHANNEL_MESSAGE_SCOPE_OBSERVED: channelMessageScopeObserved,
+    OUTLOOK_CHANNEL_MESSAGE_SCOPE_OBSERVED: outlookChannelMessageScopeObserved,
     TEAMS_CHANNEL_PROBE: captured.channelProbe,
   };
 

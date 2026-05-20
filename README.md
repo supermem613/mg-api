@@ -131,7 +131,7 @@ Copy `.claude/skills/mg-api` into the agent's skill directory and install the pa
 
 ## Auth
 
-`mg-api auth login` uses Playwright with Microsoft Edge persistent context. First run may open Edge for interactive login. Subsequent runs use the saved browser profile headlessly. The flow visits Outlook Web, Teams, a Teams chat URL, a Teams channel surface, and an Office page so the browser issues bearer tokens for each audience. If the Teams channel probe does not observe `ChannelMessage.Read.All`, login reports that explicitly because generic `Chat.*` scopes are not enough for channel-message ingest.
+`mg-api auth login` uses Playwright with Microsoft Edge persistent context. First run may open Edge for interactive login. Subsequent runs use the saved browser profile headlessly. The flow visits Outlook Web, Teams, a Teams chat URL, a Teams channel surface, and an Office page so the browser issues bearer tokens for each audience. If the Teams channel probe does not observe Graph-audience `ChannelMessage.Read.All`, login reports that explicitly because generic `Chat.*` scopes are not enough for Graph channel-message ingest. If Outlook emits an Outlook-audience `ChannelMessage.Read.All` token, login also stores it as `OUTLOOK_CHANNEL_MESSAGE_TOKEN` for consumers that explicitly support that audience.
 
 - Browser profile: `~/.mg-api/browser-profile/`
 - Auth file: `~/.mg-api/auth.json`
