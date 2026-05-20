@@ -272,13 +272,10 @@ async function runAuth(verbName, flags) {
         hasOutlookToken: !!data.OUTLOOK_TOKEN,
         hasChatToken: !!data.GRAPH_CHAT_TOKEN,
         hasChannelMessageToken: !!data.GRAPH_CHAT_TOKEN && !!data.CHANNEL_MESSAGE_SCOPE_OBSERVED,
-        hasOutlookChannelMessageToken: !!data.OUTLOOK_CHANNEL_MESSAGE_TOKEN && !!data.OUTLOOK_CHANNEL_MESSAGE_SCOPE_OBSERVED,
         channelMessageScopeObserved: !!data.CHANNEL_MESSAGE_SCOPE_OBSERVED,
-        outlookChannelMessageScopeObserved: !!data.OUTLOOK_CHANNEL_MESSAGE_SCOPE_OBSERVED,
         teamsChannelProbe: data.TEAMS_CHANNEL_PROBE,
         graphScopes: (data.GRAPH_SCOPES || []).length,
         outlookScopes: (data.OUTLOOK_SCOPES || []).length,
-        outlookChannelMessageScopes: (data.OUTLOOK_CHANNEL_MESSAGE_SCOPES || []).length,
         chatScopes: (data.GRAPH_CHAT_SCOPES || []).length,
       },
     };

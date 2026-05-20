@@ -42,11 +42,9 @@ Bearer tokens for three audiences are stored in `~/.mg-api/auth.json`:
 |-------|-----------------|---------|
 | `GRAPH_TOKEN` | `https://graph.microsoft.com` | Most read verbs |
 | `OUTLOOK_TOKEN` | `https://outlook.office.com` / `outlook.office365.com` | `email send|reply`, `chats list|messages` |
-| `OUTLOOK_CHANNEL_MESSAGE_TOKEN` | `https://outlook.office.com` with `ChannelMessage.Read.All` | Consumers that explicitly support Outlook-audience channel-message tokens |
 | `GRAPH_CHAT_TOKEN` | Graph audience with Teams chat or channel-message scopes | `teams list-channels|send-channel-message`, `chats send` |
-| `GRAPH_SCOPES`, `OUTLOOK_SCOPES`, `OUTLOOK_CHANNEL_MESSAGE_SCOPES`, `GRAPH_CHAT_SCOPES` | JWT `scp` claim | Diagnostics |
+| `GRAPH_SCOPES`, `OUTLOOK_SCOPES`, `GRAPH_CHAT_SCOPES` | JWT `scp` claim | Diagnostics |
 | `CHANNEL_MESSAGE_SCOPE_OBSERVED` | Derived from `GRAPH_CHAT_SCOPES` | Confirms whether `ChannelMessage.Read.All` was captured |
-| `OUTLOOK_CHANNEL_MESSAGE_SCOPE_OBSERVED` | Derived from `OUTLOOK_CHANNEL_MESSAGE_SCOPES` | Confirms whether an Outlook-audience `ChannelMessage.Read.All` token was captured |
 | `TEAMS_CHANNEL_PROBE` | Auth login probe result | Shows whether Teams channel probing attempted and opened a channel |
 
 Tokens are short-lived (typically 60–90 minutes). Re-run `mg-api auth login` when they expire — the persistent profile usually refreshes silently.
