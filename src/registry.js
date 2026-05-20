@@ -23,7 +23,7 @@ const capabilities = {
           { name: 'force', type: 'boolean', required: false, doc: 'Force visible login by passing --force' },
           { name: 'verbose', type: 'boolean', required: false, doc: 'Print per-phase progress to stderr' },
         ],
-        output: { envelope: envelopeSchema, data: 'Captured token presence and scope counts' },
+        output: { envelope: envelopeSchema, data: 'Captured token presence, channel-message scope status, and scope counts' },
         examples: ['mg-api auth login', 'mg-api auth login --force', 'mg-api auth login --verbose'],
       },
       logout: {

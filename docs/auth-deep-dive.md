@@ -9,7 +9,7 @@ A technical deep-dive into how `mg-api auth` uses Playwright persistent context 
 3. The persistent context stores its profile at `~/.mg-api/browser-profile/`.
 4. On first run, the browser opens visibly and the user signs into Microsoft 365.
 5. The browser profile saves cookies, localStorage, and session state to disk.
-6. The auth helper navigates through Outlook Web, Teams, a Teams chat URL, and an Office page so the browser issues bearer tokens against each audience.
+6. The auth helper navigates through Outlook Web, Teams, a Teams chat URL, a Teams channel surface, and an Office page so the browser issues bearer tokens against each audience.
 7. Tokens are captured from outbound `Authorization` headers, classified by JWT `aud` claim, and written to `~/.mg-api/auth.json`.
 8. Semantic `mg-api` commands read that file and pick the right token per verb.
 
@@ -44,6 +44,8 @@ Bearer tokens for three audiences are stored in `~/.mg-api/auth.json`:
 | `OUTLOOK_TOKEN` | `https://outlook.office.com` / `outlook.office365.com` | `email send|reply`, `chats list|messages` |
 | `GRAPH_CHAT_TOKEN` | Graph audience with Teams chat or channel-message scopes | `teams list-channels|send-channel-message`, `chats send` |
 | `GRAPH_SCOPES`, `OUTLOOK_SCOPES`, `GRAPH_CHAT_SCOPES` | JWT `scp` claim | Diagnostics |
+| `CHANNEL_MESSAGE_SCOPE_OBSERVED` | Derived from `GRAPH_CHAT_SCOPES` | Confirms whether `ChannelMessage.Read.All` was captured |
+| `TEAMS_CHANNEL_PROBE` | Auth login probe result | Shows whether Teams channel probing attempted and opened a channel |
 
 Tokens are short-lived (typically 60–90 minutes). Re-run `mg-api auth login` when they expire — the persistent profile usually refreshes silently.
 
@@ -95,6 +97,6 @@ This directory contains:
 |----------|------------------|
 | Graph | Most Microsoft Graph reads and writes |
 | Outlook REST v2.0 | `sendmail` and `reply` keep Outlook-specific behavior, and `/me/chats` reads are gated by Outlook-audience permissions in many tenants |
-| Graph (chat scopes) | Some tenants split `Chat.Read` and `Chat.ReadWrite` into a separate consent — capturing them on a chat-bearing page avoids 403s on `/teams/*/channels/*/messages` and `/chats/*/messages` |
+| Graph (Teams message scopes) | Some tenants split chat and channel-message permissions into separate tokens. Capturing `ChannelMessage.Read.All` on a channel-bearing page avoids 403s on `/teams/*/channels/*/messages`, while `Chat.*` scopes cover chat endpoints |
 
-If a chat endpoint returns 403 "Insufficient privileges", the most likely cause is that the chat-scoped token did not refresh. Run `mg-api auth login --force` and try again.
+If a channel endpoint returns 403 "Insufficient privileges", run `mg-api auth login --force` and check `auth status`. `channelMessageScopeObserved` must be true for channel-message ingest. If login reports that `ChannelMessage.Read.All` was not observed during the Teams channel probe, the browser session did not emit the delegated channel-message token.

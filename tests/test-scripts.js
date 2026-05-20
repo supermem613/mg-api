@@ -13,6 +13,7 @@ const {
   classifyToken,
   decodeJwtPayload,
   hasChatScopes,
+  hasChannelMessageScopes,
   hasMailScopes,
   isLoginUrl,
   logout,
@@ -67,6 +68,8 @@ describe('Graph auth module', () => {
     assert.strictEqual(hasChatScopes(['CHAT.READWRITE']), true);
     assert.strictEqual(hasChatScopes(['Chat.ReadWrite.All']), true);
     assert.strictEqual(hasChatScopes(['ChannelMessage.Read.All']), true);
+    assert.strictEqual(hasChannelMessageScopes(['ChannelMessage.Read.All']), true);
+    assert.strictEqual(hasChannelMessageScopes(['Chat.ReadWrite.All']), false);
     assert.strictEqual(hasChatScopes(['Mail.Read']), false);
   });
 
@@ -93,6 +96,9 @@ describe('Graph auth module', () => {
         hasGraphToken: true,
         hasOutlookToken: true,
         hasChatToken: false,
+        hasChannelMessageToken: false,
+        channelMessageScopeObserved: false,
+        teamsChannelProbe: null,
         graphScopes: ['Mail.Read'],
         outlookScopes: [],
         chatScopes: [],
@@ -178,6 +184,282 @@ describe('Graph auth module', () => {
       assert.deepStrictEqual(persisted.OUTLOOK_SCOPES, ['Mail.Send']);
       assert.deepStrictEqual(persisted.GRAPH_CHAT_SCOPES, ['ChannelMessage.Read.All']);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('probes a Teams channel surface and persists the channel-message token', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-channel-probe-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const graphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+      const chatToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Chat.Read Chat.ReadWrite' });
+      const channelMessageToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'ChannelMessage.Read.All' });
+      const teamsUrls = [];
+      let channelClicked = false;
+
+      function emit(handler, token) {
+        if (handler) handler({ headers: () => ({ authorization: `Bearer ${token}` }) });
+      }
+
+      function makePage(tokensByUrl = new Map()) {
+        let handler;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async url => {
+            if (url.includes('teams.cloud.microsoft')) teamsUrls.push(url);
+            for (const token of tokensByUrl.get(url) || []) emit(handler, token);
+          },
+          locator: selector => ({
+            count: async () => (selector.includes('/l/channel/') ? 1 : 0),
+            nth: () => ({
+              isVisible: async () => true,
+              click: async () => {
+                channelClicked = true;
+                emit(handler, channelMessageToken);
+              },
+            }),
+          }),
+          url: () => 'https://outlook.office.com/mail/',
+          waitForLoadState: async () => {},
+          waitForRequest: async () => {},
+          waitForURL: async () => {},
+        };
+      }
+
+      const outlookPage = makePage(new Map([['https://outlook.office.com/mail/', [graphToken]]]));
+      const teamsPage = makePage(new Map([['https://teams.cloud.microsoft/v2/chat', [chatToken]]]));
+      const officePage = makePage();
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({ playwright, authFile, profileDir: join(dir, 'profile') });
+      assert.ok(teamsUrls.includes('https://teams.cloud.microsoft/v2/teams'));
+      assert.strictEqual(channelClicked, true);
+      assert.strictEqual(result.GRAPH_CHAT_TOKEN, channelMessageToken);
+      assert.strictEqual(result.CHANNEL_MESSAGE_SCOPE_OBSERVED, true);
+      assert.deepStrictEqual(result.TEAMS_CHANNEL_PROBE, { attempted: true, opened: true, observed: true });
+      const persisted = readAuthFile(authFile);
+      assert.strictEqual(persisted.GRAPH_CHAT_TOKEN, channelMessageToken);
+      assert.deepStrictEqual(persisted.GRAPH_CHAT_SCOPES, ['ChannelMessage.Read.All']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('discovers and opens a joined Teams channel when channel links are not rendered', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-channel-discovery-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const graphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read Channel.ReadBasic.All' });
+      const chatToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Chat.Read' });
+      const channelMessageToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'ChannelMessage.Read.All' });
+      const channelUrl = 'https://teams.microsoft.com/l/channel/19%3Ageneral/General?groupId=team-1';
+      const visitedUrls = [];
+      const fetchUrls = [];
+
+      function emit(handler, token) {
+        if (handler) handler({ headers: () => ({ authorization: `Bearer ${token}` }) });
+      }
+
+      function makePage(tokensByUrl = new Map()) {
+        let handler;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async url => {
+            visitedUrls.push(url);
+            for (const token of tokensByUrl.get(url) || []) emit(handler, token);
+          },
+          locator: () => ({ count: async () => 0 }),
+          url: () => 'https://outlook.office.com/mail/',
+          waitForLoadState: async () => {},
+          waitForRequest: async () => {},
+          waitForURL: async () => {},
+        };
+      }
+
+      const fetch = async url => {
+        fetchUrls.push(url);
+        if (url.includes('/me/joinedTeams')) {
+          return { ok: true, status: 200, json: async () => ({ value: [{ id: 'team-1', displayName: 'Team 1' }] }) };
+        }
+        if (url.includes('/teams/team-1/channels')) {
+          return { ok: true, status: 200, json: async () => ({ value: [{ id: '19:general', displayName: 'General', webUrl: channelUrl }] }) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      };
+
+      const outlookPage = makePage(new Map([['https://outlook.office.com/mail/', [graphToken]]]));
+      const teamsPage = makePage(new Map([
+        ['https://teams.cloud.microsoft/v2/chat', [chatToken]],
+        [channelUrl, [channelMessageToken]],
+      ]));
+      const officePage = makePage();
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({ playwright, fetch, authFile, profileDir: join(dir, 'profile') });
+      assert.ok(fetchUrls.some(url => url.includes('/me/joinedTeams')));
+      assert.ok(fetchUrls.some(url => url.includes('/teams/team-1/channels')));
+      assert.ok(visitedUrls.includes(channelUrl));
+      assert.strictEqual(result.GRAPH_CHAT_TOKEN, channelMessageToken);
+      assert.strictEqual(result.CHANNEL_MESSAGE_SCOPE_OBSERVED, true);
+      assert.deepStrictEqual(result.TEAMS_CHANNEL_PROBE, { attempted: true, opened: true, observed: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the captured Teams Graph token for channel discovery before the generic Graph token is available', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-chat-discovery-token-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const graphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+      const chatToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Chat.Read Channel.ReadBasic.All' });
+      const channelMessageToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'ChannelMessage.Read.All' });
+      const channelUrl = 'https://teams.microsoft.com/l/channel/19%3Ageneral/General?groupId=team-1';
+      const fetchAuthorizations = [];
+
+      function emit(handler, token) {
+        if (handler) handler({ headers: () => ({ authorization: `Bearer ${token}` }) });
+      }
+
+      function makePage(tokensByUrl = new Map()) {
+        let handler;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async url => {
+            for (const token of tokensByUrl.get(url) || []) emit(handler, token);
+          },
+          locator: () => ({ count: async () => 0 }),
+          url: () => 'https://outlook.office.com/mail/',
+          waitForLoadState: async () => {},
+          waitForRequest: async () => {},
+          waitForURL: async () => {},
+        };
+      }
+
+      const fetch = async (url, options) => {
+        fetchAuthorizations.push(options.headers.Authorization);
+        if (url.includes('/me/joinedTeams')) {
+          return { ok: true, status: 200, json: async () => ({ value: [{ id: 'team-1', displayName: 'Team 1' }] }) };
+        }
+        if (url.includes('/teams/team-1/channels')) {
+          return { ok: true, status: 200, json: async () => ({ value: [{ id: '19:general', displayName: 'General', webUrl: channelUrl }] }) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      };
+
+      const outlookPage = makePage();
+      const teamsPage = makePage(new Map([
+        ['https://teams.cloud.microsoft/v2/chat', [chatToken]],
+        [channelUrl, [channelMessageToken]],
+      ]));
+      const officePage = makePage(new Map([['https://www.office.com/', [graphToken]]]));
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({ playwright, fetch, authFile, profileDir: join(dir, 'profile') });
+      assert.strictEqual(fetchAuthorizations[0], `Bearer ${chatToken}`);
+      assert.strictEqual(result.GRAPH_TOKEN, graphToken);
+      assert.strictEqual(result.GRAPH_CHAT_TOKEN, channelMessageToken);
+      assert.strictEqual(result.CHANNEL_MESSAGE_SCOPE_OBSERVED, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('makes missing ChannelMessage.Read.All visible after the Teams channel probe', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-missing-channel-scope-'));
+    const originalWrite = process.stderr.write;
+    const stderr = [];
+    process.stderr.write = chunk => { stderr.push(String(chunk)); return true; };
+    try {
+      const authFile = join(dir, 'auth.json');
+      const graphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+      const chatToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Chat.Read' });
+
+      function makePage(tokens = []) {
+        let handler;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async () => {
+            for (const token of tokens) {
+              emit(handler, token);
+            }
+          },
+          locator: () => ({
+            count: async () => 1,
+            nth: () => ({ isVisible: async () => true, click: async () => {} }),
+          }),
+          url: () => 'https://outlook.office.com/mail/',
+          waitForLoadState: async () => {},
+          waitForRequest: async () => { throw new Error('timeout'); },
+          waitForURL: async () => {},
+        };
+      }
+
+      function emit(handler, token) {
+        if (handler) handler({ headers: () => ({ authorization: `Bearer ${token}` }) });
+      }
+
+      const outlookPage = makePage([graphToken]);
+      const teamsPage = makePage([chatToken]);
+      const officePage = makePage([]);
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({ playwright, authFile, profileDir: join(dir, 'profile') });
+      assert.strictEqual(result.GRAPH_CHAT_TOKEN, chatToken);
+      assert.strictEqual(result.CHANNEL_MESSAGE_SCOPE_OBSERVED, false);
+      assert.deepStrictEqual(result.TEAMS_CHANNEL_PROBE, { attempted: true, opened: true, observed: false });
+      assert.match(stderr.join(''), /ChannelMessage\.Read\.All was not observed during Teams channel probe/);
+      const status = authStatus(authFile);
+      assert.strictEqual(status.hasChatToken, true);
+      assert.strictEqual(status.hasChannelMessageToken, false);
+      assert.strictEqual(status.channelMessageScopeObserved, false);
+    } finally {
+      process.stderr.write = originalWrite;
       rmSync(dir, { recursive: true, force: true });
     }
   });

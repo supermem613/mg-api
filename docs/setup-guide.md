@@ -48,6 +48,7 @@ Tokens are saved to `~/.mg-api/auth.json`:
 | `OUTLOOK_TOKEN` | Bearer for Outlook REST v2.0 (`outlook.office.com`) |
 | `GRAPH_CHAT_TOKEN` | Graph bearer with Teams chat or channel-message scopes |
 | `GRAPH_SCOPES`, `OUTLOOK_SCOPES`, `GRAPH_CHAT_SCOPES` | Scope arrays for diagnostics |
+| `CHANNEL_MESSAGE_SCOPE_OBSERVED` | Whether auth login captured `ChannelMessage.Read.All` for channel ingest |
 
 The auth file is an implementation detail consumed by `mg-api` and its internal helpers. Agents should not read or write it directly.
 
@@ -103,7 +104,7 @@ Tokens expired. Re-run `mg-api auth login`.
 
 ### HTTP 403 on Teams endpoints
 
-The chat-scoped token did not refresh, or the tenant requires separate consent for `Chat.Read` / `Chat.ReadWrite`. Run `mg-api auth login --force` and re-try.
+For channel-message ingest, `Chat.Read` and `Chat.ReadWrite` are not enough. Run `mg-api auth login --force`, then `mg-api auth status`; `channelMessageScopeObserved` must be true. If login reports that `ChannelMessage.Read.All` was not observed during the Teams channel probe, Teams web did not emit the delegated channel-message token during capture.
 
 ### HTTP 403 elsewhere
 
