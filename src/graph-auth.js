@@ -98,6 +98,20 @@ function hasMailScopes(scopes) {
   return scopes.some(s => /^mail\.(read|readwrite)$/i.test(s));
 }
 
+function hasCalendarScopes(scopes) {
+  return scopes.some(s => /^calendars\.(read|readwrite)(\..+)?$/i.test(s));
+}
+
+function compareGraphTokenScopes(candidateScopes, currentScopes) {
+  const cMail = hasMailScopes(candidateScopes);
+  const xMail = hasMailScopes(currentScopes);
+  if (cMail !== xMail) return cMail ? 1 : -1;
+  const cCal = hasCalendarScopes(candidateScopes);
+  const xCal = hasCalendarScopes(currentScopes);
+  if (cCal !== xCal) return cCal ? 1 : -1;
+  return candidateScopes.length - currentScopes.length;
+}
+
 function hasChatScopes(scopes) {
   return scopes.some(s => /^(chat\.read|chat\.readwrite|chat\.readwrite\.all|channelmessage\.read\.all)$/i.test(s));
 }
@@ -253,10 +267,12 @@ async function authenticate(options = {}) {
     const info = classifyToken(token);
     if (!info) return null;
     if (info.type === 'graph') {
-      if (hasMailScopes(info.scopes) && !hasMailScopes(captured.graphScopes)) {
-        captured.graph = token;
-        captured.graphScopes = info.scopes;
-      } else if (info.scopes.length > captured.graphScopes.length) {
+      // Pick the graph token most likely to satisfy email and calendar verbs.
+      // The OWA shell emits high-scope graph tokens that nevertheless omit
+      // Mail.Read and Calendars.Read because OWA reads those via the outlook
+      // audience instead. Never let such a token overwrite a previously
+      // captured one that has those scopes.
+      if (compareGraphTokenScopes(info.scopes, captured.graphScopes) > 0) {
         captured.graph = token;
         captured.graphScopes = info.scopes;
       }
@@ -405,7 +421,9 @@ module.exports = {
   authenticate,
   authStatus,
   classifyToken,
+  compareGraphTokenScopes,
   decodeJwtPayload,
+  hasCalendarScopes,
   hasChatScopes,
   hasChannelMessageScopes,
   hasMailScopes,

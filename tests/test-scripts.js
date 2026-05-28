@@ -11,7 +11,9 @@ const {
   authenticate,
   authStatus,
   classifyToken,
+  compareGraphTokenScopes,
   decodeJwtPayload,
+  hasCalendarScopes,
   hasChatScopes,
   hasChannelMessageScopes,
   hasMailScopes,
@@ -71,6 +73,37 @@ describe('Graph auth module', () => {
     assert.strictEqual(hasChannelMessageScopes(['ChannelMessage.Read.All']), true);
     assert.strictEqual(hasChannelMessageScopes(['Chat.ReadWrite.All']), false);
     assert.strictEqual(hasChatScopes(['Mail.Read']), false);
+  });
+
+  it('detects calendar scopes including shared variants', () => {
+    assert.strictEqual(hasCalendarScopes(['Calendars.Read']), true);
+    assert.strictEqual(hasCalendarScopes(['calendars.readwrite']), true);
+    assert.strictEqual(hasCalendarScopes(['Calendars.Read.Shared']), true);
+    assert.strictEqual(hasCalendarScopes(['Calendars.ReadWrite.Shared']), true);
+    assert.strictEqual(hasCalendarScopes(['CalendarsView.Read']), false);
+    assert.strictEqual(hasCalendarScopes(['Mail.Read']), false);
+  });
+
+  it('prefers graph tokens with mail then calendar then more scopes', () => {
+    // mail-scoped beats larger no-mail token (regression: OWA shell graph token
+    // had 26 scopes including chat/files but no Mail.Read or Calendars.Read).
+    const owaShell = ['Chat.Read', 'Files.ReadWrite.All', 'User.Read', 'People.Read', 'Group.ReadWrite.All', 'OnlineMeetings.Read', 'Directory.Read.All', 'Channel.ReadBasic.All'];
+    const teamsWeb = ['Mail.Read', 'Calendars.Read', 'User.Read'];
+    assert.ok(compareGraphTokenScopes(teamsWeb, owaShell) > 0);
+    assert.ok(compareGraphTokenScopes(owaShell, teamsWeb) < 0);
+
+    // both have mail: calendar tie-breaker wins
+    const mailOnly = ['Mail.Read', 'User.Read'];
+    const mailAndCal = ['Mail.Read', 'Calendars.Read'];
+    assert.ok(compareGraphTokenScopes(mailAndCal, mailOnly) > 0);
+
+    // identical mail+calendar profile: more total scopes wins
+    const small = ['Mail.Read', 'Calendars.Read'];
+    const big = ['Mail.Read', 'Calendars.Read', 'Files.Read'];
+    assert.ok(compareGraphTokenScopes(big, small) > 0);
+
+    // starts from empty captured set: anything beats nothing
+    assert.ok(compareGraphTokenScopes(['User.Read'], []) > 0);
   });
 
   it('detects Microsoft login URLs', () => {
@@ -183,6 +216,57 @@ describe('Graph auth module', () => {
       assert.deepStrictEqual(persisted.GRAPH_SCOPES, ['Mail.ReadWrite', 'User.Read']);
       assert.deepStrictEqual(persisted.OUTLOOK_SCOPES, ['Mail.Send']);
       assert.deepStrictEqual(persisted.GRAPH_CHAT_SCOPES, ['ChannelMessage.Read.All']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the mail-scoped graph token when a larger OWA shell token arrives later', async () => {
+    // Regression: OWA emits a graph token with many scopes (chat, files,
+    // meetings) but no Mail.Read / Calendars.Read. Without the priority
+    // comparator the shell token clobbers an earlier mail-scoped capture
+    // and email.list / calendar.list start returning 403.
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-graph-priority-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const mailScoped = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.Read Calendars.Read User.Read' });
+      const owaShell = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Chat.Read Files.ReadWrite.All User.Read People.Read Group.ReadWrite.All OnlineMeetings.Read Directory.Read.All Channel.ReadBasic.All' });
+      const outlookToken = encodeJwt({ aud: 'https://outlook.office.com', scp: 'Mail.Send' });
+
+      function makePage(authHeaders) {
+        let handler;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async () => {
+            for (const auth of authHeaders) {
+              if (handler) handler({ headers: () => ({ authorization: auth }) });
+            }
+          },
+          url: () => 'https://outlook.office.com/mail/',
+          waitForLoadState: async () => {},
+          waitForURL: async () => {},
+        };
+      }
+      const outlookPage = makePage([`Bearer ${mailScoped}`, `Bearer ${owaShell}`, `Bearer ${outlookToken}`]);
+      const teamsPage = makePage([]);
+      const officePage = makePage([]);
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({ playwright, authFile, profileDir: join(dir, 'profile') });
+      assert.strictEqual(result.GRAPH_TOKEN, mailScoped, 'mail-scoped graph token must win over larger OWA shell token');
+      assert.deepStrictEqual(result.GRAPH_SCOPES, ['Mail.Read', 'Calendars.Read', 'User.Read']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
