@@ -13,7 +13,7 @@ Read mail with `$filter`, `$search`, and `$select`; mark as read/unread; move an
 | Soft-delete | `mg-api email delete --message-id AAMkAGI...` |
 | List attachments | `mg-api email attachments --message-id AAMkAGI...` |
 
-All read/move/delete verbs route to `graph` (`https://graph.microsoft.com/v1.0`). Inspect the live contract first:
+All message read/move/delete verbs route to `outlook` (`https://outlook.office.com/api/v2.0`). Inspect the live contract first:
 
 ```bash
 mg-api schema email list

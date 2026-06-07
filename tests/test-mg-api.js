@@ -92,7 +92,8 @@ describe('registry invariants', () => {
   });
 
   it('routes email and chat verbs to the expected token and base', () => {
-    assert.strictEqual(capabilities.email.verbs.list.token, 'graph');
+    assert.strictEqual(capabilities.email.verbs.list.token, 'outlook');
+    assert.strictEqual(capabilities.email.verbs.list.base, 'outlook');
     assert.strictEqual(capabilities.email.verbs.send.token, 'outlook');
     assert.strictEqual(capabilities.email.verbs.send.base, 'outlook');
     assert.strictEqual(capabilities.email.verbs.reply.token, 'outlook');
@@ -320,6 +321,13 @@ describe('Graph request construction', () => {
     });
     assert.strictEqual(request.endpoint, '/me/messages?%24search=%22quarterly%20review%22&%24top=10');
     assert.strictEqual(request.body, '');
+  });
+
+  it('routes mailbox message verbs through the Outlook REST token', () => {
+    for (const verbName of ['list', 'get', 'search', 'move', 'delete', 'attachments']) {
+      assert.strictEqual(capabilities.email.verbs[verbName].token, 'outlook', `email ${verbName} token`);
+      assert.strictEqual(capabilities.email.verbs[verbName].base, 'outlook', `email ${verbName} base`);
+    }
   });
 
   it('builds email send bodies with PascalCase recipients and content type', () => {

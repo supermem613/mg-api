@@ -62,5 +62,7 @@ describe('mg-api live Microsoft Graph integration', () => {
     const list = runMgApi(['email', 'list', '--top', '1', '--select', 'subject,from,receivedDateTime']);
     assert.strictEqual(list.ok, true);
     assert.ok(Array.isArray(list.data.value));
+    assert.strictEqual(list.meta.token, 'outlook');
+    assert.strictEqual(list.meta.base, 'outlook');
   });
 });

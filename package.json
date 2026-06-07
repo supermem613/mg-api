@@ -1,6 +1,6 @@
 {
   "name": "mg-api",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Agentic Microsoft Graph CLI with a bundled thin skill for coding agents",
   "bin": {
     "mg-api": "bin/mg-api.js"
