@@ -193,12 +193,19 @@ function gitPullMadeNoChanges(output) {
   return /already up[- ]to[- ]date\.?/i.test(output);
 }
 
+function resolveCommandInvocation(command, args, platform = process.platform) {
+  if (platform === 'win32') {
+    return { command: 'cmd.exe', args: ['/d', '/s', '/c', command, ...args] };
+  }
+  return { command, args };
+}
+
 function runCommand(command, args, cwd) {
-  return spawnSync(command, args, {
+  const invocation = resolveCommandInvocation(command, args);
+  return spawnSync(invocation.command, invocation.args, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    shell: process.platform === 'win32',
   });
 }
 
