@@ -605,7 +605,7 @@ const capabilities = {
   update: {
     id: 'update',
     summary: 'Self-update this mg-api checkout',
-    description: 'Pull latest source, install dependencies, and run the build validation for git-clone installs.',
+    description: 'Pull latest source using auto-detected soda or git, install dependencies, and run the build validation for clone installs.',
     verbs: {
       run: {
         id: 'update.run',

@@ -478,7 +478,7 @@ describe('update command', () => {
     });
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.data.updated, false);
-    assert.deepStrictEqual(commands, ['git pull --ff-only']);
+    assert.deepStrictEqual(commands, ['sd status', 'git pull --ff-only']);
   });
 
   it('runs install and build when git pull returns changes', () => {
@@ -494,10 +494,98 @@ describe('update command', () => {
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.data.updated, true);
     assert.deepStrictEqual(commands, [
+      'sd status',
       'git pull --ff-only',
       'npm install --no-audit --no-fund',
       'npm run build',
     ]);
+  });
+
+  it('uses sd pull and rebuilds when soda updates the worktree', () => {
+    const commands = [];
+    const result = selfUpdate({
+      repoRoot,
+      isGitRepo: () => true,
+      runCommand: (command, args) => {
+        commands.push({ command, args });
+        if (command === 'sd' && args[0] === 'status') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, data: { summary: { initialized: true } } }), stderr: '' };
+        }
+        if (command === 'sd' && args[0] === 'pull') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, data: [{ status: 'updated', worktreeUpdated: true }] }), stderr: '' };
+        }
+        return { status: 0, stdout: 'ok\n', stderr: '' };
+      },
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.data.updated, true);
+    assert.ok(commands.some(c => c.command === 'sd' && c.args.join(' ') === 'pull'));
+    assert.ok(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'install --no-audit --no-fund'));
+    assert.ok(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'run build'));
+    assert.strictEqual(commands.some(c => c.command === 'git' && c.args.join(' ') === 'pull --ff-only'), false);
+  });
+
+  it('skips install and build when sd pull leaves the worktree unchanged', () => {
+    const commands = [];
+    const result = selfUpdate({
+      repoRoot,
+      isGitRepo: () => true,
+      runCommand: (command, args) => {
+        commands.push({ command, args });
+        if (command === 'sd' && args[0] === 'status') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, data: { summary: { initialized: true } } }), stderr: '' };
+        }
+        return { status: 0, stdout: JSON.stringify({ ok: true, data: [{ status: 'current', worktreeUpdated: false }] }), stderr: '' };
+      },
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.data.updated, false);
+    assert.ok(commands.some(c => c.command === 'sd' && c.args.join(' ') === 'pull'));
+    assert.strictEqual(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'install --no-audit --no-fund'), false);
+    assert.strictEqual(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'run build'), false);
+  });
+
+  it('falls back to git pull when sd status cannot prove soda management', () => {
+    const statusResults = [
+      { status: 0, stdout: JSON.stringify({ ok: false, error: 'not initialized' }), stderr: '' },
+      { status: 0, stdout: 'not json', stderr: '' },
+      { status: 1, stdout: '', stderr: 'sd not found' },
+    ];
+    for (const statusResult of statusResults) {
+      const commands = [];
+      const result = selfUpdate({
+        repoRoot,
+        isGitRepo: () => true,
+        runCommand: (command, args) => {
+          commands.push({ command, args });
+          if (command === 'sd' && args[0] === 'status') return statusResult;
+          return { status: 0, stdout: 'Already up to date.\n', stderr: '' };
+        },
+      });
+      assert.strictEqual(result.ok, true);
+      assert.ok(commands.some(c => c.command === 'git' && c.args.join(' ') === 'pull --ff-only'));
+    }
+  });
+
+  it('fails loudly when sd pull fails in a soda-managed repo', () => {
+    const commands = [];
+    const result = selfUpdate({
+      repoRoot,
+      isGitRepo: () => true,
+      runCommand: (command, args) => {
+        commands.push({ command, args });
+        if (command === 'sd' && args[0] === 'status') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, data: { summary: { initialized: true } } }), stderr: '' };
+        }
+        return { status: 0, stdout: JSON.stringify({ ok: false, error: 'stream reconcile failed' }), stderr: '' };
+      },
+    });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.error.code, 'SD_PULL_FAILED');
+    assert.strictEqual(result.error.message, 'stream reconcile failed');
+    assert.ok(commands.some(c => c.command === 'sd' && c.args.join(' ') === 'pull'));
+    assert.strictEqual(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'install --no-audit --no-fund'), false);
+    assert.strictEqual(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'run build'), false);
   });
 });
 

@@ -148,7 +148,7 @@ npm test
 npm run test:integration
 ```
 
-`npm run build` validates generated artifacts and the `mg-api` bin before local linking or publishing. `npm link` and `npm run link:local` are supported for local development. For linked or git-clone installs, `mg-api update` pulls with `git pull --ff-only`, skips install/build when already current, and otherwise runs `npm install --no-audit --no-fund` plus `npm run build`.
+`npm run build` validates generated artifacts and the `mg-api` bin before local linking or publishing. `npm link` and `npm run link:local` are supported for local development. For linked or clone installs, `mg-api update` auto-detects soda-managed checkouts and pulls with `sd pull`; other git checkouts pull with `git pull --ff-only`. It skips install/build when already current and otherwise runs `npm install --no-audit --no-fund` plus `npm run build`.
 
 `npm test` covers the `mg-api` registry, schema generation, help generation, JSON envelopes, Graph auth/REST internals, no raw fallback, auth isolation, package bin wiring, and SKILL router sync.
 

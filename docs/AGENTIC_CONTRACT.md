@@ -79,7 +79,7 @@ Only `mg-api auth` may load Playwright. REST capability commands must stay on th
 
 ## Self-update
 
-`mg-api update` is for git-clone installs. It runs `git pull --ff-only`, skips install and build when already current, and runs `npm install --no-audit --no-fund` plus `npm run build` when changes arrive. It still returns the standard JSON envelope on stdout.
+`mg-api update` is for clone installs. It auto-detects soda-managed checkouts and pulls with `sd pull`; other git checkouts pull with `git pull --ff-only`. It skips install and build when already current, and runs `npm install --no-audit --no-fund` plus `npm run build` when changes arrive. It still returns the standard JSON envelope on stdout.
 
 ## Mutation safety
 

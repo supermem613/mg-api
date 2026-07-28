@@ -214,6 +214,29 @@ function isGitRepo(cwd) {
   return result.status === 0 && result.stdout.trim() === 'true';
 }
 
+// soda's git-interlock hooks block raw git writes in an sd-powered repo, and
+// soda tracks stream state a raw `git pull` bypasses, so a soda-managed
+// checkout must self-update through `sd`. `initialized: true` is the
+// authoritative signal: a plain git repo that `sd` can merely read reports
+// false, and anything that cannot answer stays on git.
+function isSodaManagedRepo(run, cwd) {
+  try {
+    const result = run('sd', ['status'], cwd);
+    if (result.status !== 0) return false;
+    const envelope = JSON.parse(result.stdout || '');
+    return envelope.ok === true && envelope.data?.summary?.initialized === true;
+  } catch {
+    return false;
+  }
+}
+
+function sodaEnvelopeError(envelope) {
+  if (!envelope || envelope.error == null) return null;
+  if (typeof envelope.error === 'string') return envelope.error;
+  if (typeof envelope.error.message === 'string') return envelope.error.message;
+  return JSON.stringify(envelope.error);
+}
+
 function selfUpdate(deps = {}) {
   const root = deps.repoRoot || repoRoot;
   const checkGitRepo = deps.isGitRepo || isGitRepo;
@@ -228,18 +251,41 @@ function selfUpdate(deps = {}) {
     };
   }
 
-  const pull = run('git', ['pull', '--ff-only'], root);
-  const pullOutput = `${pull.stdout || ''}${pull.stderr || ''}`.trim();
-  steps.push({ name: 'git pull --ff-only', ok: pull.status === 0, output: pullOutput });
-  if (pull.status !== 0) {
-    return {
-      ok: false,
-      data: { repoRoot: root, steps },
-      error: { code: 'GIT_PULL_FAILED', message: pullOutput || 'git pull --ff-only failed' },
-    };
-  }
-  if (gitPullMadeNoChanges(pullOutput)) {
-    return { ok: true, data: { repoRoot: root, updated: false, steps } };
+  if (isSodaManagedRepo(run, root)) {
+    const pull = run('sd', ['pull'], root);
+    const pullOutput = `${pull.stdout || ''}${pull.stderr || ''}`.trim();
+    steps.push({ name: 'sd pull', ok: pull.status === 0, output: pullOutput });
+    let envelope = null;
+    try {
+      envelope = JSON.parse(pull.stdout || '');
+    } catch {
+      // Treat invalid sd pull output as a soda failure. Falling back to git would bypass soda state.
+    }
+    if (pull.status !== 0 || envelope?.ok !== true) {
+      return {
+        ok: false,
+        data: { repoRoot: root, steps },
+        error: { code: 'SD_PULL_FAILED', message: sodaEnvelopeError(envelope) || pullOutput || 'sd pull failed' },
+      };
+    }
+    const outcomes = Array.isArray(envelope.data) ? envelope.data : [];
+    if (!outcomes.some(outcome => outcome?.worktreeUpdated === true)) {
+      return { ok: true, data: { repoRoot: root, updated: false, steps } };
+    }
+  } else {
+    const pull = run('git', ['pull', '--ff-only'], root);
+    const pullOutput = `${pull.stdout || ''}${pull.stderr || ''}`.trim();
+    steps.push({ name: 'git pull --ff-only', ok: pull.status === 0, output: pullOutput });
+    if (pull.status !== 0) {
+      return {
+        ok: false,
+        data: { repoRoot: root, steps },
+        error: { code: 'GIT_PULL_FAILED', message: pullOutput || 'git pull --ff-only failed' },
+      };
+    }
+    if (gitPullMadeNoChanges(pullOutput)) {
+      return { ok: true, data: { repoRoot: root, updated: false, steps } };
+    }
   }
 
   const install = run('npm', ['install', '--no-audit', '--no-fund'], root);

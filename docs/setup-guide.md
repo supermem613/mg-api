@@ -28,6 +28,8 @@ Update a linked or git-clone install later with:
 mg-api update
 ```
 
+The update command auto-detects soda-managed checkouts and pulls with `sd pull`; other git checkouts pull with `git pull --ff-only`.
+
 ## Authenticate
 
 ```bash
