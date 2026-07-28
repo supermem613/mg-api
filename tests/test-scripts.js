@@ -221,6 +221,124 @@ describe('Graph auth module', () => {
     }
   });
 
+  it('preserves an already-cached graph token when a pass captures none', async () => {
+    // Regression: token capture is passive, so a quiet pass can see the outlook
+    // audience and no graph audience at all. auth.json used to be rebuilt from
+    // only what the current pass captured, which destroyed a working
+    // GRAPH_TOKEN and left every graph-backed verb reporting that no Graph
+    // token is cached -- while auth login still reported success.
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-graph-preserve-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const priorGraphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+      writeFileSync(authFile, `${JSON.stringify({
+        GRAPH_TOKEN: priorGraphToken,
+        GRAPH_SCOPES: ['Mail.ReadWrite', 'User.Read'],
+      })}\n`);
+
+      const outlookToken = encodeJwt({ aud: 'https://outlook.office.com', scp: 'Mail.Send' });
+
+      function makePage(authHeaders) {
+        let handler;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async () => {
+            for (const auth of authHeaders) {
+              if (handler) handler({ headers: () => ({ authorization: auth }) });
+            }
+          },
+          url: () => 'https://outlook.office.com/mail/',
+          waitForLoadState: async () => {},
+          waitForURL: async () => {},
+        };
+      }
+
+      const outlookPage = makePage([`Bearer ${outlookToken}`]);
+      const teamsPage = makePage([]);
+      const officePage = makePage([]);
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({ playwright, authFile, profileDir: join(dir, 'profile') });
+      assert.strictEqual(result.GRAPH_TOKEN, priorGraphToken);
+      assert.strictEqual(result.OUTLOOK_TOKEN, outlookToken);
+      const persisted = readAuthFile(authFile);
+      assert.strictEqual(persisted.GRAPH_TOKEN, priorGraphToken);
+      assert.deepStrictEqual(persisted.GRAPH_SCOPES, ['Mail.ReadWrite', 'User.Read']);
+      assert.strictEqual(persisted.OUTLOOK_TOKEN, outlookToken);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('retries the graph surfaces when the first pass captures no graph token', async () => {
+    // The pass only sees a graph token if a page happens to emit one while it
+    // is settling, so a single quiet pass left a fresh install with no graph
+    // token at all. Retrying the graph-bearing surfaces makes the capture
+    // converge instead of depending on one lucky pass.
+    const dir = mkdtempSync(join(tmpdir(), 'mg-api-graph-retry-'));
+    try {
+      const authFile = join(dir, 'auth.json');
+      const graphToken = encodeJwt({ aud: 'https://graph.microsoft.com', scp: 'Mail.ReadWrite User.Read' });
+      const outlookToken = encodeJwt({ aud: 'https://outlook.office.com', scp: 'Mail.Send' });
+
+      // Emits nothing on the first goto and the graph token only on a later one.
+      function makeSequencedPage(sequence, href) {
+        let handler;
+        let call = 0;
+        return {
+          on: (evt, fn) => { if (evt === 'request') handler = fn; },
+          goto: async () => {
+            const headers = sequence[Math.min(call, sequence.length - 1)] || [];
+            call += 1;
+            for (const auth of headers) {
+              if (handler) handler({ headers: () => ({ authorization: auth }) });
+            }
+          },
+          url: () => href,
+          waitForLoadState: async () => {},
+          waitForURL: async () => {},
+        };
+      }
+
+      const outlookPage = makeSequencedPage([[`Bearer ${outlookToken}`]], 'https://outlook.office.com/mail/');
+      const teamsPage = makeSequencedPage([[]], 'https://teams.cloud.microsoft/');
+      const officePage = makeSequencedPage([[], [`Bearer ${graphToken}`]], 'https://www.office.com/');
+      let nextPage = 0;
+      const newPages = [teamsPage, officePage];
+
+      const playwright = {
+        chromium: {
+          launchPersistentContext: async () => ({
+            pages: () => [outlookPage],
+            newPage: async () => newPages[nextPage++],
+            cookies: async () => [],
+            close: async () => {},
+          }),
+        },
+      };
+
+      const result = await authenticate({ playwright, authFile, profileDir: join(dir, 'profile') });
+      assert.strictEqual(result.GRAPH_TOKEN, graphToken);
+      const persisted = readAuthFile(authFile);
+      assert.strictEqual(persisted.GRAPH_TOKEN, graphToken);
+      assert.deepStrictEqual(persisted.GRAPH_SCOPES, ['Mail.ReadWrite', 'User.Read']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the mail-scoped graph token when a larger OWA shell token arrives later', async () => {
     // Regression: OWA emits a graph token with many scopes (chat, files,
     // meetings) but no Mail.Read / Calendars.Read. Without the priority

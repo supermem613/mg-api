@@ -213,8 +213,8 @@ const capabilities = {
         summary: 'List calendar events',
         method: 'GET',
         path: '/me/events',
-        token: 'graph',
-        base: 'graph',
+        token: 'outlook',
+        base: 'outlook',
         auth: 'required',
         handler: 'graph-rest',
         params: [
@@ -232,8 +232,8 @@ const capabilities = {
         summary: 'List events in a time window using calendarView',
         method: 'GET',
         path: '/me/calendarView',
-        token: 'graph',
-        base: 'graph',
+        token: 'outlook',
+        base: 'outlook',
         auth: 'required',
         handler: 'graph-rest',
         params: [
@@ -251,8 +251,8 @@ const capabilities = {
         summary: 'Get a single event by id',
         method: 'GET',
         path: '/me/events/{event-id}',
-        token: 'graph',
-        base: 'graph',
+        token: 'outlook',
+        base: 'outlook',
         auth: 'required',
         handler: 'graph-rest',
         params: [

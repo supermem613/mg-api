@@ -78,6 +78,19 @@ describe('registry invariants', () => {
     }
   });
 
+  it('routes calendar reads through the outlook audience', () => {
+    // Regression: calendar reads were pinned to the graph audience, but the
+    // OWA sign-in only ever emits graph tokens without Calendars.* (it reads
+    // calendar through the outlook audience instead). Every calendar read
+    // therefore returned HTTP 403 ErrorAccessDenied even with a valid login,
+    // which is why callers were told to bypass mg-api for calendar entirely.
+    for (const verbName of ['list', 'view', 'get']) {
+      const verb = capabilities.calendar.verbs[verbName];
+      assert.strictEqual(verb.token, 'outlook', `${verb.id} must use the outlook token`);
+      assert.strictEqual(verb.base, 'outlook', `${verb.id} must use the outlook base`);
+    }
+  });
+
   it('declares token and base for every graph-rest verb', () => {
     for (const capability of Object.values(capabilities)) {
       for (const [verbName, verb] of Object.entries(capability.verbs)) {

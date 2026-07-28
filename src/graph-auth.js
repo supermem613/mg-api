@@ -19,6 +19,8 @@ const PAGE_TIMEOUT_MS = 20_000;
 const NETWORK_IDLE_MS = 8_000;
 const CHANNEL_PROBE_TIMEOUT_MS = 15_000;
 const CHANNEL_MESSAGE_SCOPE_WARNING = 'ChannelMessage.Read.All was not observed during Teams channel probe. Teams channel ingest may fail.';
+const GRAPH_TOKEN_WARNING = 'No Graph token was captured. Graph-backed verbs (calendar, users, teams) will fail until a later sign-in captures one.';
+const GRAPH_CAPTURE_RETRIES = 2;
 const TEAMS_CHANNEL_LINK_SELECTORS = [
   'a[href*="/l/channel/"]',
   'a[href*="/v2/channel/"]',
@@ -373,6 +375,19 @@ async function authenticate(options = {}) {
   await officePage.goto(OFFICE_URL, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS }).catch(err => log(`Office goto failed (continuing): ${err.message}`));
   await settlePage(officePage);
 
+  // Token capture is passive: a graph token is only seen if some page emits one
+  // while the pass is settling, so a quiet pass can finish with none. Revisit
+  // the graph-bearing surfaces so the capture converges instead of depending on
+  // a single lucky pass.
+  for (let attempt = 1; !captured.graph && attempt <= GRAPH_CAPTURE_RETRIES; attempt++) {
+    log(`no graph token captured yet — retry ${attempt}/${GRAPH_CAPTURE_RETRIES}`);
+    await officePage.goto(OFFICE_URL, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS }).catch(err => log(`Office retry goto failed (continuing): ${err.message}`));
+    await settlePage(officePage);
+    if (captured.graph) break;
+    await page.goto(OUTLOOK_URL, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS }).catch(err => log(`Outlook retry goto failed (continuing): ${err.message}`));
+    await settlePage(page);
+  }
+
   const channelMessageScopeObserved = hasChannelMessageScopes(captured.graphChatScopes);
   log(`captured: graph=${!!captured.graph} chat=${!!captured.graphChat} channelMessage=${channelMessageScopeObserved} outlook=${!!captured.outlook}`);
   await context.close();
@@ -382,12 +397,15 @@ async function authenticate(options = {}) {
   }
 
   const authData = {
-    ...(captured.graph && { GRAPH_TOKEN: captured.graph }),
-    ...(captured.graphChat && { GRAPH_CHAT_TOKEN: captured.graphChat }),
-    ...(captured.outlook && { OUTLOOK_TOKEN: captured.outlook }),
-    ...(captured.graphScopes.length && { GRAPH_SCOPES: captured.graphScopes }),
-    ...(captured.graphChatScopes.length && { GRAPH_CHAT_SCOPES: captured.graphChatScopes }),
-    ...(captured.outlookScopes.length && { OUTLOOK_SCOPES: captured.outlookScopes }),
+    // Carry forward the previously cached credentials. A pass that misses an
+    // audience must never delete a token it simply did not observe this time,
+    // otherwise one flaky capture silently breaks a working install.
+    ...(readAuthFile(authFile) || {}),
+    // Each token is written together with its scopes so the pair can never
+    // drift apart across a partial capture.
+    ...(captured.graph && { GRAPH_TOKEN: captured.graph, GRAPH_SCOPES: captured.graphScopes }),
+    ...(captured.graphChat && { GRAPH_CHAT_TOKEN: captured.graphChat, GRAPH_CHAT_SCOPES: captured.graphChatScopes }),
+    ...(captured.outlook && { OUTLOOK_TOKEN: captured.outlook, OUTLOOK_SCOPES: captured.outlookScopes }),
     CHANNEL_MESSAGE_SCOPE_OBSERVED: channelMessageScopeObserved,
     TEAMS_CHANNEL_PROBE: captured.channelProbe,
   };
@@ -395,6 +413,7 @@ async function authenticate(options = {}) {
   ensureDir(path.dirname(authFile));
   fs.writeFileSync(authFile, JSON.stringify(authData, null, 2) + '\n');
   if (!channelMessageScopeObserved) process.stderr.write(`${CHANNEL_MESSAGE_SCOPE_WARNING}\n`);
+  if (!authData.GRAPH_TOKEN) process.stderr.write(`${GRAPH_TOKEN_WARNING}\n`);
   log(`wrote ${authFile}`);
   return authData;
 }
