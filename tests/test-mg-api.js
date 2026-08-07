@@ -4,8 +4,9 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
-const { existsSync, readFileSync } = require('node:fs');
+const { existsSync, readFileSync, writeFileSync, rmSync } = require('node:fs');
 const { join } = require('node:path');
+const { tmpdir } = require('node:os');
 const { capabilities } = require('../src/registry');
 const {
   emitSchema,
@@ -20,6 +21,7 @@ const {
   gitPullMadeNoChanges,
   selfUpdate,
   coerceValue,
+  collectParams,
 } = require('../src/mg-api-core');
 
 const repoRoot = join(__dirname, '..');
@@ -344,23 +346,155 @@ describe('Graph request construction', () => {
   });
 
   it('builds email send bodies with PascalCase recipients and content type', () => {
-    const request = buildGraphRequest(capabilities.email.verbs.send, {
-      to: [{ emailAddress: { address: 'alice@example.com' } }],
-      cc: [{ emailAddress: { address: 'bob@example.com' } }],
+    // Go through collectParams, not hand-shaped input: the recipient shape is the
+    // thing under test, and pre-shaping it here is what let the camelCase bug ship.
+    const values = collectParams(capabilities.email.verbs.send, {
+      to: 'alice@example.com',
+      cc: 'bob@example.com',
       subject: 'Hello',
       body: 'Hi there',
       'body-type': 'Text',
-      'save-to-sent': true,
+      'save-to-sent': 'true',
     });
+    const request = buildGraphRequest(capabilities.email.verbs.send, values);
     assert.strictEqual(request.endpoint, '/me/sendmail');
     const parsed = JSON.parse(request.body);
-    assert.deepStrictEqual(parsed.Message.ToRecipients, [{ emailAddress: { address: 'alice@example.com' } }]);
-    assert.deepStrictEqual(parsed.Message.CcRecipients, [{ emailAddress: { address: 'bob@example.com' } }]);
+    assert.deepStrictEqual(parsed.Message.ToRecipients, [{ EmailAddress: { Address: 'alice@example.com' } }]);
+    assert.deepStrictEqual(parsed.Message.CcRecipients, [{ EmailAddress: { Address: 'bob@example.com' } }]);
     assert.strictEqual(parsed.Message.Subject, 'Hello');
     assert.strictEqual(parsed.Message.Body.ContentType, 'Text');
     assert.strictEqual(parsed.Message.Body.Content, 'Hi there');
     assert.strictEqual(parsed.SaveToSentItems, true);
     assert.ok(!Object.hasOwn(parsed.Message, 'BccRecipients'), 'omitted optional Bcc');
+  });
+
+  it('shapes recipients per backend: PascalCase for Outlook REST, camelCase for Graph', () => {
+    // Outlook REST v2.0 rejects camelCase with
+    // "The property 'emailAddress' does not exist on type 'Microsoft.OutlookServices.Recipient'".
+    // Graph v1.0 rejects PascalCase. One shaper, two dialects, chosen by spec.base.
+    const outlook = collectParams(capabilities.email.verbs.send, {
+      to: 'alice@example.com',
+      subject: 's',
+      body: 'b',
+    });
+    assert.deepStrictEqual(outlook.to, [{ EmailAddress: { Address: 'alice@example.com' } }]);
+
+    const graph = collectParams(capabilities.calendar.verbs.create, {
+      subject: 's',
+      start: '2026-01-15T09:00:00',
+      end: '2026-01-15T09:30:00',
+      attendees: 'alice@example.com',
+    });
+    assert.deepStrictEqual(graph.attendees, [
+      { emailAddress: { address: 'alice@example.com' }, type: 'required' },
+    ]);
+  });
+
+  it('shapes every csv recipient/attendee param to match its own verb base', () => {
+    for (const [capName, cap] of Object.entries(capabilities)) {
+      for (const [verbName, spec] of Object.entries(cap.verbs ?? {})) {
+        const shaped = (spec.params ?? []).filter(
+          p => p.type === 'csv' && (p.valueShape === 'recipient' || p.valueShape === 'attendee'),
+        );
+        if (!shaped.length) continue;
+        const flags = {};
+        for (const p of spec.params) {
+          if (p.required || shaped.includes(p)) flags[p.name] = p.type === 'csv' ? 'a@b.com' : 'x';
+        }
+        // Satisfy any one-of group so the verb collects; the group members are
+        // not what this test is about.
+        for (const group of spec.requireOneOf ?? []) {
+          if (group.some(name => flags[name] !== undefined)) continue;
+          flags[group[0]] = 'x';
+        }
+        const values = collectParams(spec, flags);
+        for (const p of shaped) {
+          const [entry] = values[p.name];
+          const where = `${capName} ${verbName} --${p.name}`;
+          if (spec.base === 'outlook') {
+            assert.ok(entry.EmailAddress?.Address, `${where} must be PascalCase for Outlook REST`);
+          } else {
+            assert.ok(entry.emailAddress?.address, `${where} must be camelCase for Graph`);
+          }
+        }
+      }
+    }
+  });
+
+  it('loads a large body from --body-file so it never travels as an argv string', () => {
+    // Windows caps a process command line at 32,767 chars. A 1MB brief has to
+    // reach the CLI through the filesystem or it cannot be sent at all.
+    const tmp = join(tmpdir(), `mg-api-body-${process.pid}.html`);
+    const big = `<p>${'x'.repeat(1024 * 1024)}</p>`;
+    writeFileSync(tmp, big, 'utf8');
+    try {
+      const values = collectParams(capabilities.email.verbs.send, {
+        to: 'alice@example.com',
+        subject: 'Big',
+        'body-file': tmp,
+        'body-type': 'HTML',
+      });
+      assert.strictEqual(values.body, big);
+      assert.ok(!Object.hasOwn(values, 'body-file'), 'body-file collapses into body');
+      const parsed = JSON.parse(buildGraphRequest(capabilities.email.verbs.send, values).body);
+      assert.strictEqual(parsed.Message.Body.Content, big);
+      assert.strictEqual(parsed.Message.Body.ContentType, 'HTML');
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+  });
+
+  it('strips a UTF-8 BOM from --body-file so it does not render in the mail', () => {
+    const tmp = join(tmpdir(), `mg-api-bom-${process.pid}.html`);
+    writeFileSync(tmp, '\uFEFF<p>hi</p>', 'utf8');
+    try {
+      const values = collectParams(capabilities.email.verbs.send, {
+        to: 'a@b.com',
+        subject: 's',
+        'body-file': tmp,
+      });
+      assert.strictEqual(values.body, '<p>hi</p>');
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+  });
+
+  it('rejects --body with --body-file, and requires one of them', () => {
+    assert.throws(
+      () => collectParams(capabilities.email.verbs.send, {
+        to: 'a@b.com', subject: 's', body: 'inline', 'body-file': 'anything.html',
+      }),
+      /either --body or --body-file/,
+    );
+    assert.throws(
+      () => collectParams(capabilities.email.verbs.send, { to: 'a@b.com', subject: 's' }),
+      /Provide one of --body or --body-file/,
+    );
+  });
+
+  it('names the file and the reason when --body-file cannot be read', () => {
+    const missing = join(tmpdir(), 'mg-api-definitely-absent.html');
+    assert.throws(
+      () => collectParams(capabilities.email.verbs.send, {
+        to: 'a@b.com', subject: 's', 'body-file': missing,
+      }),
+      /cannot read .*mg-api-definitely-absent\.html: file not found/,
+    );
+  });
+
+  it('gives email reply the same file escape hatch', () => {
+    const tmp = join(tmpdir(), `mg-api-reply-${process.pid}.html`);
+    writeFileSync(tmp, '<p>reply</p>', 'utf8');
+    try {
+      const values = collectParams(capabilities.email.verbs.reply, {
+        'message-id': 'AAMk', 'comment-file': tmp,
+      });
+      assert.strictEqual(values.comment, '<p>reply</p>');
+      const parsed = JSON.parse(buildGraphRequest(capabilities.email.verbs.reply, values).body);
+      assert.strictEqual(parsed.Comment, '<p>reply</p>');
+    } finally {
+      rmSync(tmp, { force: true });
+    }
   });
 
   it('builds calendar create bodies with attendees and start/end blocks', () => {

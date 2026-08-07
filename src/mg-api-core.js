@@ -52,13 +52,28 @@ function splitCsv(value) {
     .filter(item => item.length > 0);
 }
 
-function shapeValue(shape, value) {
-  if (shape === 'recipient') return { emailAddress: { address: value } };
-  if (shape === 'attendee') return { emailAddress: { address: value }, type: 'required' };
+// Recipient and attendee payload shapes are NOT portable across the two backends.
+// Graph v1.0 (base: 'graph') types are camelCase; Outlook REST v2.0 (base: 'outlook')
+// types are PascalCase and reject camelCase outright with
+// "The property 'emailAddress' does not exist on type 'Microsoft.OutlookServices.Recipient'".
+// email send/reply are the only outlook-based verbs that shape values, so this is the
+// one place the distinction has to be made.
+function shapeValue(shape, value, base) {
+  const isOutlook = base === 'outlook';
+  if (shape === 'recipient') {
+    return isOutlook
+      ? { EmailAddress: { Address: value } }
+      : { emailAddress: { address: value } };
+  }
+  if (shape === 'attendee') {
+    return isOutlook
+      ? { EmailAddress: { Address: value }, Type: 'Required' }
+      : { emailAddress: { address: value }, type: 'required' };
+  }
   return value;
 }
 
-function coerceValue(param, value) {
+function coerceValue(param, value, base) {
   if (value === undefined && Object.hasOwn(param, 'default')) return param.default;
   if (value === undefined) return undefined;
   if (param.type === 'number') {
@@ -82,19 +97,60 @@ function coerceValue(param, value) {
   if (param.type === 'csv') {
     if (value === true) throw new Error(`--${param.name} requires a value`);
     const parts = splitCsv(value);
-    return parts.map(item => shapeValue(param.valueShape, item));
+    return parts.map(item => shapeValue(param.valueShape, item, base));
+  }
+  // A 'file' param carries its content, not its path. Windows caps a process
+  // command line at 32,767 characters, so any body that can outgrow that must
+  // reach the CLI through the filesystem instead of through argv.
+  if (param.type === 'file') {
+    if (value === true) throw new Error(`--${param.name} requires a file path`);
+    const filePath = path.resolve(String(value));
+    let content;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch (err) {
+      const why = err.code === 'ENOENT' ? 'file not found'
+        : err.code === 'EISDIR' ? 'path is a directory'
+        : err.code === 'EACCES' ? 'permission denied'
+        : err.message;
+      throw new Error(`--${param.name} cannot read ${filePath}: ${why}`);
+    }
+    // A UTF-8 BOM would ship as a stray glyph at the top of an HTML mail body.
+    return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
   }
   return String(value);
 }
 
 function collectParams(spec, flags) {
+  // Conflicts are settled on the raw flags, before coercion. A 'file' param reads
+  // from disk during coercion, so checking afterwards would report "file not found"
+  // for a user whose actual mistake was passing both --body and --body-file.
+  for (const param of spec.params) {
+    if (!param.fills) continue;
+    if (flags[param.name] !== undefined && flags[param.fills] !== undefined) {
+      throw new Error(`Pass either --${param.fills} or --${param.name}, not both`);
+    }
+  }
   const values = {};
   for (const param of spec.params) {
-    const value = coerceValue(param, flags[param.name]);
-    if (value === undefined && param.required) {
+    const value = coerceValue(param, flags[param.name], spec.base);
+    if (value !== undefined) values[param.name] = value;
+  }
+  // A param declaring `fills` hands its value to another param and disappears,
+  // so --body-file and --body are one slot in the body template, never two.
+  for (const param of spec.params) {
+    if (!param.fills || values[param.name] === undefined) continue;
+    values[param.fills] = values[param.name];
+    delete values[param.name];
+  }
+  for (const param of spec.params) {
+    if (param.required && values[param.name] === undefined) {
       throw new Error(`Missing required option --${param.name}`);
     }
-    if (value !== undefined) values[param.name] = value;
+  }
+  for (const group of spec.requireOneOf ?? []) {
+    if (group.some(name => values[name] !== undefined)) continue;
+    throw new Error(`Provide one of ${group.map(name => `--${name}`).join(' or ')}`);
   }
   return values;
 }

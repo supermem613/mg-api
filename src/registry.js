@@ -103,10 +103,12 @@ const capabilities = {
           { name: 'cc', type: 'csv', valueShape: 'recipient', required: false, doc: 'Comma-separated Cc recipients' },
           { name: 'bcc', type: 'csv', valueShape: 'recipient', required: false, doc: 'Comma-separated Bcc recipients' },
           { name: 'subject', type: 'string', required: true, doc: 'Message subject' },
-          { name: 'body', type: 'string', required: true, doc: 'Message body content' },
+          { name: 'body', type: 'string', required: false, doc: 'Message body content. Use --body-file for anything large' },
+          { name: 'body-file', type: 'file', fills: 'body', required: false, doc: 'Path to a file whose contents become the body. Required above ~30,000 characters, since argv is capped at 32,767' },
           { name: 'body-type', type: 'string', required: false, default: 'Text', doc: 'Body content type, Text or HTML' },
           { name: 'save-to-sent', type: 'boolean', required: false, default: true, doc: 'Save a copy in Sent Items' },
         ],
+        requireOneOf: [['body', 'body-file']],
         bodyTemplate: {
           Message: {
             Subject: '{subject}',
@@ -118,7 +120,10 @@ const capabilities = {
           SaveToSentItems: '{save-to-sent}',
         },
         output: { envelope: envelopeSchema, data: 'Send status' },
-        examples: ['mg-api email send --to alice@example.com --subject Hello --body "Hi there"'],
+        examples: [
+          'mg-api email send --to alice@example.com --subject Hello --body "Hi there"',
+          'mg-api email send --to alice@example.com --subject "The Brief" --body-type HTML --body-file brief.html',
+        ],
       },
       reply: {
         id: 'email.reply',
@@ -131,11 +136,16 @@ const capabilities = {
         handler: 'graph-rest',
         params: [
           { name: 'message-id', type: 'string', required: true, doc: 'Source message id' },
-          { name: 'comment', type: 'string', required: true, doc: 'Reply comment to prepend to the original body' },
+          { name: 'comment', type: 'string', required: false, doc: 'Reply comment to prepend to the original body. Use --comment-file for anything large' },
+          { name: 'comment-file', type: 'file', fills: 'comment', required: false, doc: 'Path to a file whose contents become the reply comment' },
         ],
+        requireOneOf: [['comment', 'comment-file']],
         bodyTemplate: { Comment: '{comment}' },
         output: { envelope: envelopeSchema, data: 'Reply status' },
-        examples: ['mg-api email reply --message-id AAMkAGI... --comment "Thanks, approved"'],
+        examples: [
+          'mg-api email reply --message-id AAMkAGI... --comment "Thanks, approved"',
+          'mg-api email reply --message-id AAMkAGI... --comment-file reply.html',
+        ],
       },
       search: {
         id: 'email.search',
