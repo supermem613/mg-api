@@ -618,6 +618,7 @@ describe('update command', () => {
     const result = selfUpdate({
       repoRoot,
       isGitRepo: () => true,
+      hasSodaWorkspace: () => false,
       runCommand: (command, args) => {
         commands.push(`${command} ${args.join(' ')}`);
         return { status: 0, stdout: 'Already up to date.\n', stderr: '' };
@@ -633,6 +634,7 @@ describe('update command', () => {
     const result = selfUpdate({
       repoRoot,
       isGitRepo: () => true,
+      hasSodaWorkspace: () => false,
       runCommand: (command, args) => {
         commands.push(`${command} ${args.join(' ')}`);
         return { status: 0, stdout: command === 'git' ? 'Fast-forward\n' : 'ok\n', stderr: '' };
@@ -703,6 +705,7 @@ describe('update command', () => {
       const result = selfUpdate({
         repoRoot,
         isGitRepo: () => true,
+        hasSodaWorkspace: () => false,
         runCommand: (command, args) => {
           commands.push({ command, args });
           if (command === 'sd' && args[0] === 'status') return statusResult;
@@ -733,6 +736,78 @@ describe('update command', () => {
     assert.ok(commands.some(c => c.command === 'sd' && c.args.join(' ') === 'pull'));
     assert.strictEqual(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'install --no-audit --no-fund'), false);
     assert.strictEqual(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'run build'), false);
+  });
+
+  it('pulls with sd when workspace markers exist even if sd status fails', () => {
+    const commands = [];
+    const result = selfUpdate({
+      repoRoot,
+      isGitRepo: () => true,
+      hasSodaWorkspace: () => true,
+      runCommand: (command, args) => {
+        commands.push({ command, args });
+        if (command === 'sd' && args[0] === 'status') {
+          return { status: 1, stdout: '', stderr: 'spawn sd ENOENT' };
+        }
+        if (command === 'sd' && args[0] === 'pull') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, data: [{ status: 'updated', worktree: true }] }), stderr: '' };
+        }
+        return { status: 0, stdout: 'ok\n', stderr: '' };
+      },
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.data.updated, true);
+    assert.strictEqual(commands.some(c => c.command === 'git' && c.args.join(' ') === 'pull --ff-only'), false);
+    assert.ok(commands.some(c => c.command === 'sd' && c.args[0] === 'pull'));
+  });
+
+  it('treats soda pull worktree true as a worktree change', () => {
+    const result = selfUpdate({
+      repoRoot,
+      isGitRepo: () => true,
+      runCommand: (command, args) => {
+        if (command === 'sd' && args[0] === 'status') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, data: { summary: { initialized: true } } }), stderr: '' };
+        }
+        if (command === 'sd' && args[0] === 'pull') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, data: [{ status: 'pulled', worktree: true, worktreeUpdated: false }] }), stderr: '' };
+        }
+        return { status: 0, stdout: 'ok\n', stderr: '' };
+      },
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.data.updated, true);
+  });
+
+  it('retries with sd pull when git pull hits soda interlock hooks', () => {
+    const commands = [];
+    const result = selfUpdate({
+      repoRoot,
+      isGitRepo: () => true,
+      hasSodaWorkspace: () => false,
+      runCommand: (command, args) => {
+        commands.push({ command, args });
+        if (command === 'sd' && args[0] === 'status') {
+          return { status: 1, stdout: '', stderr: 'spawn sd ENOENT' };
+        }
+        if (command === 'git' && args.join(' ') === 'pull --ff-only') {
+          return {
+            status: 1,
+            stdout: '',
+            stderr: 'soda: raw git commit blocked in this sd-powered repo\nUse "sd submit" instead.',
+          };
+        }
+        if (command === 'sd' && args[0] === 'pull') {
+          return { status: 0, stdout: JSON.stringify({ ok: true, data: [{ status: 'updated', worktreeUpdated: true }] }), stderr: '' };
+        }
+        return { status: 0, stdout: 'ok\n', stderr: '' };
+      },
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.data.updated, true);
+    assert.ok(commands.some(c => c.command === 'git' && c.args.join(' ') === 'pull --ff-only'));
+    assert.ok(commands.some(c => c.command === 'sd' && c.args[0] === 'pull'));
+    assert.ok(commands.some(c => c.command === 'npm' && c.args.join(' ') === 'run build'));
   });
 });
 

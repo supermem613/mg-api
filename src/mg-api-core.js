@@ -270,20 +270,52 @@ function isGitRepo(cwd) {
   return result.status === 0 && result.stdout.trim() === 'true';
 }
 
-// soda's git-interlock hooks block raw git writes in an sd-powered repo, and
-// soda tracks stream state a raw `git pull` bypasses, so a soda-managed
-// checkout must self-update through `sd`. `initialized: true` is the
-// authoritative signal: a plain git repo that `sd` can merely read reports
-// false, and anything that cannot answer stays on git.
-function isSodaManagedRepo(run, cwd) {
+function hasSodaWorkspaceMarkers(dir) {
+  const workspaceDir = path.join(dir, '.sd');
+  const metaPath = path.join(workspaceDir, 'meta.json');
+  const repoIdPath = path.join(workspaceDir, 'repo-id');
+  if (!fs.existsSync(metaPath) || !fs.existsSync(repoIdPath)) {
+    return false;
+  }
   try {
-    const result = run('sd', ['status'], cwd);
-    if (result.status !== 0) return false;
-    const envelope = JSON.parse(result.stdout || '');
-    return envelope.ok === true && envelope.data?.summary?.initialized === true;
+    return fs.readFileSync(repoIdPath, 'utf8').trim().length > 0;
   } catch {
     return false;
   }
+}
+
+function isSodaGitInterlockError(message) {
+  return /sd-powered repo/i.test(message) || /raw git .* blocked/i.test(message);
+}
+
+function sodaWorktreeChanged(outcomes) {
+  return outcomes.some(outcome => outcome?.worktreeUpdated === true || outcome?.worktree === true);
+}
+
+function parseJsonEnvelope(stdout) {
+  try {
+    return JSON.parse(stdout || '');
+  } catch {
+    return null;
+  }
+}
+
+// soda's git-interlock hooks block raw git writes in an sd-powered repo, and
+// soda tracks stream state a raw `git pull` bypasses, so a soda-managed
+// checkout must self-update through `sd`. Detection uses sd status when
+// available, plus local .sd workspace markers so a missing sd binary cannot be
+// mistaken for a plain checkout.
+function isSodaManagedRepo(run, cwd, hasSodaWorkspace) {
+  try {
+    const result = run('sd', ['status'], cwd);
+    const envelope = parseJsonEnvelope(result.stdout);
+    if (envelope?.ok === true && envelope.data?.summary?.initialized === true) {
+      return true;
+    }
+  } catch {
+    // Fall through to workspace markers. A missing sd binary is not a plain git checkout.
+  }
+  return hasSodaWorkspace(cwd);
 }
 
 function sodaEnvelopeError(envelope) {
@@ -293,10 +325,30 @@ function sodaEnvelopeError(envelope) {
   return JSON.stringify(envelope.error);
 }
 
+function sodaPullUpdate(run, root, steps) {
+  const pull = run('sd', ['pull'], root);
+  const pullOutput = `${pull.stdout || ''}${pull.stderr || ''}`.trim();
+  steps.push({ name: 'sd pull', ok: pull.status === 0, output: pullOutput });
+  const envelope = parseJsonEnvelope(pull.stdout);
+  if (pull.status !== 0 || envelope?.ok !== true) {
+    return {
+      ok: false,
+      data: { repoRoot: root, steps },
+      error: { code: 'SD_PULL_FAILED', message: sodaEnvelopeError(envelope) || pullOutput || 'sd pull failed' },
+    };
+  }
+  const outcomes = Array.isArray(envelope.data) ? envelope.data : [];
+  if (!sodaWorktreeChanged(outcomes)) {
+    return { ok: true, data: { repoRoot: root, updated: false, steps } };
+  }
+  return null;
+}
+
 function selfUpdate(deps = {}) {
   const root = deps.repoRoot || repoRoot;
   const checkGitRepo = deps.isGitRepo || isGitRepo;
   const run = deps.runCommand || runCommand;
+  const hasSodaWorkspace = deps.hasSodaWorkspace || hasSodaWorkspaceMarkers;
   const steps = [];
 
   if (!checkGitRepo(root)) {
@@ -307,39 +359,25 @@ function selfUpdate(deps = {}) {
     };
   }
 
-  if (isSodaManagedRepo(run, root)) {
-    const pull = run('sd', ['pull'], root);
-    const pullOutput = `${pull.stdout || ''}${pull.stderr || ''}`.trim();
-    steps.push({ name: 'sd pull', ok: pull.status === 0, output: pullOutput });
-    let envelope = null;
-    try {
-      envelope = JSON.parse(pull.stdout || '');
-    } catch {
-      // Treat invalid sd pull output as a soda failure. Falling back to git would bypass soda state.
-    }
-    if (pull.status !== 0 || envelope?.ok !== true) {
-      return {
-        ok: false,
-        data: { repoRoot: root, steps },
-        error: { code: 'SD_PULL_FAILED', message: sodaEnvelopeError(envelope) || pullOutput || 'sd pull failed' },
-      };
-    }
-    const outcomes = Array.isArray(envelope.data) ? envelope.data : [];
-    if (!outcomes.some(outcome => outcome?.worktreeUpdated === true)) {
-      return { ok: true, data: { repoRoot: root, updated: false, steps } };
-    }
+  if (isSodaManagedRepo(run, root, hasSodaWorkspace)) {
+    const sodaResult = sodaPullUpdate(run, root, steps);
+    if (sodaResult) return sodaResult;
   } else {
     const pull = run('git', ['pull', '--ff-only'], root);
     const pullOutput = `${pull.stdout || ''}${pull.stderr || ''}`.trim();
     steps.push({ name: 'git pull --ff-only', ok: pull.status === 0, output: pullOutput });
     if (pull.status !== 0) {
-      return {
-        ok: false,
-        data: { repoRoot: root, steps },
-        error: { code: 'GIT_PULL_FAILED', message: pullOutput || 'git pull --ff-only failed' },
-      };
-    }
-    if (gitPullMadeNoChanges(pullOutput)) {
+      if (isSodaGitInterlockError(pullOutput)) {
+        const sodaResult = sodaPullUpdate(run, root, steps);
+        if (sodaResult) return sodaResult;
+      } else {
+        return {
+          ok: false,
+          data: { repoRoot: root, steps },
+          error: { code: 'GIT_PULL_FAILED', message: pullOutput || 'git pull --ff-only failed' },
+        };
+      }
+    } else if (gitPullMadeNoChanges(pullOutput)) {
       return { ok: true, data: { repoRoot: root, updated: false, steps } };
     }
   }
@@ -523,6 +561,8 @@ module.exports = {
   renderVerbHelp,
   envelope,
   gitPullMadeNoChanges,
+  hasSodaWorkspaceMarkers,
+  isSodaGitInterlockError,
   buildGraphRequest,
   buildBody,
   addQuery,
